@@ -1,0 +1,430 @@
+// Este archivo contiene la lógica para generar mallas 3D a partir de análisis de imágenes
+// NUEVO: Ahora usa templates anatómicos combinados con análisis de Gemini
+
+import { detectObjectType, getTemplate } from './templates';
+import { logger } from '../utils/logger'; // ✅ Agregado para logging consistente
+import { MESH_CONSTANTS } from '../config/constants'; // ✅ Constantes centralizadas
+
+interface GeometryData {
+  type: 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid';
+  position: [number, number, number];
+  size: [number, number, number];
+  rotation?: [number, number, number];
+  color: string;
+}
+
+interface MeshData {
+  geometries: GeometryData[];
+  metadata: {
+    totalBlocks: number;
+    boundingBox: {
+      min: [number, number, number];
+      max: [number, number, number];
+    };
+  };
+}
+
+interface AnalysisData {
+  descripcion?: string;
+  dimensiones?: {
+    ancho?: string;
+    alto?: string;
+    profundidad?: string;
+  };
+  geometria?: string[];
+  colores?: string[];
+  complejidad?: string;
+  userPrompt?: string; // Para detección de tipo de template
+  partes?: any[]; // ✅ Array de partes de Gemini para modelos únicos
+}
+
+/**
+ * Convierte dimensiones en texto a números
+ */
+function parseDimensions(dimensions: any): { width: number; height: number; depth: number } {
+  const defaultSize = 1;
+
+  const parseValue = (value: string | undefined): number => {
+    if (!value) return defaultSize;
+    const match = value.match(/(\d+\.?\d*)/);
+    return match ? parseFloat(match[1]) : defaultSize;
+  };
+
+  return {
+    width: parseValue(dimensions?.ancho) || defaultSize,
+    height: parseValue(dimensions?.alto) || defaultSize,
+    depth: parseValue(dimensions?.profundidad) || defaultSize,
+  };
+}
+
+/**
+ * Mapea nombres de geometrías a tipos válidos
+ */
+function mapGeometryType(geometryName: string): GeometryData['type'] {
+  const normalized = geometryName.toLowerCase();
+
+  if (normalized.includes('cubo') || normalized.includes('box') || normalized.includes('cube')) {
+    return 'box';
+  }
+  if (normalized.includes('cilindro') || normalized.includes('cylinder') || normalized.includes('cilindro')) {
+    return 'cylinder';
+  }
+  if (normalized.includes('esfera') || normalized.includes('sphere') || normalized.includes('ball')) {
+    return 'sphere';
+  }
+  if (normalized.includes('cono') || normalized.includes('cone')) {
+    return 'cone';
+  }
+  if (normalized.includes('piramide') || normalized.includes('pyramid')) {
+    return 'pyramid';
+  }
+
+  // Por defecto, usar box (cubo)
+  return 'box';
+}
+
+/**
+ * Genera un modelo 3D usando TEMPLATES ANATÓMICOS + análisis de Gemini
+ * NUEVO SISTEMA HÍBRIDO: Template → Partes Gemini → Genérico
+ */
+export function generateMeshFromImage(analysisData: any): MeshData {
+  const geometries: GeometryData[] = [];
+
+  // Parsear dimensiones
+  const dimensions = parseDimensions(analysisData.dimensiones);
+  const baseSize = Math.max(dimensions.width, dimensions.height, dimensions.depth);
+
+  // Obtener colores del análisis de Gemini (prioridad alta)
+  const colors = analysisData.colores && analysisData.colores.length > 0
+    ? analysisData.colores
+    : ['#2C3E50', '#34495E', '#7F8C8D', '#95A5A6', '#BDC3C7']; // Grises militares
+
+  logger.info(`🎨 Colores: ${colors.join(', ')}`);
+
+  // PASO 1: Detectar tipo de objeto basado en descripción +userPrompt
+  const objectType = detectObjectType(analysisData);
+  logger.info(`🔍 Tipo detectado: ${objectType}`);
+
+  // PASO 2: PRIORIDAD - Templates especializados PRIMERO (skeleton, etc)
+  //         Partes de Gemini solo para tipos genéricos
+
+  const template = getTemplate(objectType);
+
+  if (template && objectType !== 'generic') {
+    // ✅ OPCIÓN 1: Template especializado (skeleton_armored, humanoid, etc)
+    logger.info(`⚙️ Template especializado: ${template.type} (${template.parts.length} partes)`);
+
+    const scaleFactor = baseSize / 2;
+
+    template.parts.forEach((part, index) => {
+      const scaledPosition: [number, number, number] = [
+        part.position[0] * scaleFactor,
+        part.position[1] * scaleFactor,
+        part.position[2] * scaleFactor
+      ];
+
+      const scaledSize: [number, number, number] = [
+        part.size[0] * scaleFactor,
+        part.size[1] * scaleFactor,
+        part.size[2] * scaleFactor
+      ];
+
+      const colorIndex = part.colorIndex !== undefined ? part.colorIndex : index;
+      const color = colors[colorIndex % colors.length];
+
+      geometries.push({
+        type: part.type,
+        position: scaledPosition,
+        size: scaledSize,
+        rotation: part.rotation || [0, 0, 0],
+        color: color,
+      });
+    });
+
+  } else if (analysisData.partes && Array.isArray(analysisData.partes) && analysisData.partes.length >= 5) {
+    // ⚙️ OPCIÓN 2: Partes de Gemini (para tipos genéricos)
+    logger.info(`✅ GENERACIÓN ÚNICA: ${analysisData.partes.length} partes específicas`);
+
+    const numPartes = analysisData.partes.length;
+    const gridSize = Math.ceil(Math.cbrt(numPartes));
+    const partSize = baseSize / gridSize;
+
+    analysisData.partes.forEach((parte: any, index: number) => {
+      // 🎯 POSICIONAMIENTO INTELIGENTE
+      const pos = (parte.posicion || parte.pos || '').toLowerCase();
+      const nombre = (parte.nombre || '').toLowerCase();
+      let x = 0, y = 0, z = 0;
+
+      // Y: altura
+      if (pos.includes('cabeza') || pos.includes('cráneo') || nombre.includes('cabeza')) {
+        y = baseSize * 0.8;
+      } else if (pos.includes('hombro') || nombre.includes('hombro')) {
+        y = baseSize * 0.6;
+      } else if (pos.includes('torso') || pos.includes('pecho')) {
+        y = baseSize * 0.3;
+      } else if (pos.includes('cintura') || pos.includes('cadera')) {
+        y = 0;
+      } else if (pos.includes('rodilla') || pos.includes('muslo')) {
+        y = -baseSize * 0.3;
+      } else if (pos.includes('pie') || pos.includes('tobillo')) {
+        y = -baseSize * 0.7;
+      }
+
+      // X: lateral
+      if (pos.includes('izq') || nombre.includes('izq')) x = -baseSize * 0.4;
+      else if (pos.includes('der') || nombre.includes('der')) x = baseSize * 0.4;
+      const geoType = mapGeometryType(parte.geometria || parte.geo || 'box');
+
+      let sizeMultiplier = 1;
+      const tam = (parte.tamañoRelativo || parte.tam || 'M').toUpperCase();
+      if (tam === 'XL' || tam.includes('MUY GRANDE')) sizeMultiplier = 1.5;
+      else if (tam === 'L' || tam.includes('GRANDE')) sizeMultiplier = 1.2;
+      else if (tam === 'S' || tam.includes('PEQUEÑO')) sizeMultiplier = 0.7;
+
+      const size: [number, number, number] = [
+        partSize * sizeMultiplier,
+        partSize * sizeMultiplier,
+        partSize * sizeMultiplier
+      ];
+
+      if (geoType === 'cylinder') {
+        size[1] = size[1] * 1.5;
+      } else if (geoType === 'sphere') {
+        size[0] = size[0] * 0.9;
+        size[1] = size[1] * 0.9;
+        size[2] = size[2] * 0.9;
+      }
+
+      const color = parte.color || colors[index % colors.length];
+
+      geometries.push({
+        type: geoType,
+        position: [x, y, z],
+        size,
+        rotation: [0, (index * 20) % 360, 0],
+        color,
+      });
+    });
+
+  } else if (getTemplate(objectType)) {
+    // ⚙️ OPCIÓN 2: Template SOLO si NO hay partes de Gemini
+    const template = getTemplate(objectType)!;
+    logger.info(`⚙️ Template: ${template.type} (${template.parts.length} partes)`);
+
+    const scaleFactor = baseSize / 2;
+
+    template.parts.forEach((part, index) => {
+      const scaledPosition: [number, number, number] = [
+        part.position[0] * scaleFactor,
+        part.position[1] * scaleFactor,
+        part.position[2] * scaleFactor
+      ];
+
+      const scaledSize: [number, number, number] = [
+        part.size[0] * scaleFactor,
+        part.size[1] * scaleFactor,
+        part.size[2] * scaleFactor
+      ];
+
+      const colorIndex = part.colorIndex !== undefined ? part.colorIndex : index;
+      const color = colors[colorIndex % colors.length];
+
+      geometries.push({
+        type: part.type,
+        position: scaledPosition,
+        size: scaledSize,
+        rotation: part.rotation || [0, 0, 0],
+        color: color,
+      });
+    });
+
+
+  } else {
+    // ⚠️ OPCIÓN 3: Fallback genérico
+    logger.info(`⚠️ Generación genérica (${MESH_CONSTANTS.DEFAULT_GENERIC_BLOCKS} bloques)`);
+
+    const geometryTypes = analysisData.geometria || ['cubo'];
+    const complexity = analysisData.complejidad?.toLowerCase() || 'alto';
+
+    let blockCount = MESH_CONSTANTS.DEFAULT_GENERIC_BLOCKS;
+    const blockSize = baseSize / Math.cbrt(blockCount);
+
+    for (let i = 0; i < blockCount; i++) {
+      const geometryType = mapGeometryType(geometryTypes[i % geometryTypes.length]);
+      const color = colors[i % colors.length];
+
+      const gridSize = Math.ceil(Math.cbrt(blockCount));
+      const x = (i % gridSize) * blockSize - (baseSize / 2);
+      const y = Math.floor(i / gridSize) % gridSize * blockSize;
+      const z = Math.floor(i / (gridSize * gridSize)) * blockSize - (baseSize / 2);
+
+      let size: [number, number, number] = [blockSize, blockSize, blockSize];
+
+      if (geometryType === 'cylinder') {
+        size = [blockSize, blockSize * 1.5, blockSize];
+      } else if (geometryType === 'sphere') {
+        size = [blockSize * 0.9, blockSize * 0.9, blockSize * 0.9];
+      }
+
+      geometries.push({
+        type: geometryType,
+        position: [x, y, z],
+        size,
+        rotation: [0, (i * 15) % 360, 0],
+        color,
+      });
+    }
+  }
+
+  // Calcular bounding box
+  const positions = geometries.map(g => g.position);
+  const minX = Math.min(...positions.map(p => p[0]));
+  const maxX = Math.max(...positions.map(p => p[0]));
+  const minY = Math.min(...positions.map(p => p[1]));
+  const maxY = Math.max(...positions.map(p => p[1]));
+  const minZ = Math.min(...positions.map(p => p[2]));
+  const maxZ = Math.max(...positions.map(p => p[2]));
+
+  return {
+    geometries,
+    metadata: {
+      totalBlocks: geometries.length,
+      boundingBox: {
+        min: [minX, minY, minZ],
+        max: [maxX, maxY, maxZ],
+      },
+    },
+  };
+}
+
+/**
+ * Procesa datos de imagen antes de generar la malla
+ */
+export function processImageForMesh(analysisData: any): AnalysisData {
+  // Normalizar y limpiar los datos del análisis
+  const processed: AnalysisData = {
+    descripcion: analysisData.descripcion || analysisData.description || 'Modelo 3D generado',
+    dimensiones: analysisData.dimensiones || analysisData.dimensions || {
+      ancho: '2',
+      alto: '2',
+      profundidad: '2',
+    },
+    geometria: Array.isArray(analysisData.geometria)
+      ? analysisData.geometria
+      : (analysisData.geometria ? [analysisData.geometria] : ['cubo']),
+    colores: Array.isArray(analysisData.colores)
+      ? analysisData.colores
+      : (analysisData.colores ? [analysisData.colores] : ['#8B5CF6']),
+    complejidad: analysisData.complejidad || analysisData.complexity || 'medio',
+    partes: analysisData.partes || [],  // ✅ CRÍTICO: Conservar partes de Gemini
+  };
+
+  return processed;
+}
+
+/**
+ * Genera formato OBJ para exportación
+ */
+export function generateOBJ(meshData: MeshData): string {
+  let objContent = '# Modelo 3D generado por Image to 3D Analyzer\n';
+  objContent += '# Formato estilo Roblox/Minecraft\n\n';
+
+  let vertexOffset = 1;
+
+  meshData.geometries.forEach((geometry, index) => {
+    objContent += `\n# Geometry ${index + 1}: ${geometry.type}\n`;
+    objContent += `g block_${index + 1}\n`;
+
+    const [x, y, z] = geometry.position;
+    const [w, h, d] = geometry.size;
+
+    // Generar vértices según el tipo de geometría
+    if (geometry.type === 'box') {
+      // Cubo: 8 vértices
+      const vertices = [
+        [x - w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y + h / 2, z + d / 2],
+        [x - w / 2, y + h / 2, z + d / 2],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      // Caras del cubo
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 4} ${vertexOffset + 7} ${vertexOffset + 6} ${vertexOffset + 5}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 5} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 2} ${vertexOffset + 6} ${vertexOffset + 7} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 7} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset + 1} ${vertexOffset + 5} ${vertexOffset + 6} ${vertexOffset + 2}\n`;
+
+      vertexOffset += 8;
+    } else if (geometry.type === 'sphere') {
+      // Esfera simplificada (octaedro)
+      const vertices = [
+        [x, y + h / 2, z],
+        [x - w / 2, y, z],
+        [x, y, z - d / 2],
+        [x + w / 2, y, z],
+        [x, y, z + d / 2],
+        [x, y - h / 2, z],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      // Caras del octaedro
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 2} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 3} ${vertexOffset + 2}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 4} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 1} ${vertexOffset + 4}\n`;
+
+      vertexOffset += 6;
+    } else {
+      // Para otros tipos, usar un cubo simplificado
+      const vertices = [
+        [x - w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y + h / 2, z + d / 2],
+        [x - w / 2, y + h / 2, z + d / 2],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 4} ${vertexOffset + 7} ${vertexOffset + 6} ${vertexOffset + 5}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 5} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 2} ${vertexOffset + 6} ${vertexOffset + 7} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 7} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset + 1} ${vertexOffset + 5} ${vertexOffset + 6} ${vertexOffset + 2}\n`;
+
+      vertexOffset += 8;
+    }
+  });
+
+  return objContent;
+}
+
+/**
+ * Genera formato JSON para el frontend
+ */
+export function generateJSON(meshData: MeshData): string {
+  return JSON.stringify(meshData, null, 2);
+}

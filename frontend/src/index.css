@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-surface: rgba(255, 255, 255, 0.03);
+  --neon-primary: #7000FF;
+  --neon-secondary: #00F0FF;
+}
+
+body {
+  background-color: #030014;
+  color: #FFFFFF;
+  font-family: 'Outfit', sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #030014;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1F1B38;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #7000FF;
+}
+
+/* Utilities */
+@layer utilities {
+  .glass-panel {
+    @apply bg-opacity-10 backdrop-blur-xl border border-white/10 shadow-xl;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.02) 100%);
+  }
+
+  .glass-card {
+    @apply bg-opacity-5 backdrop-blur-md border border-white/5 transition-all duration-300;
+    background: rgba(15, 11, 41, 0.6);
+  }
+  
+  .glass-card:hover {
+    @apply border-white/20 transform -translate-y-1 shadow-lg;
+    box-shadow: 0 10px 30px -10px rgba(112, 0, 255, 0.2);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 10px rgba(112, 0, 255, 0.5);
+  }
+
+  .text-glow-cyan {
+    text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+  }
+
+  .neon-border {
+    box-shadow: 0 0 5px theme('colors.primary.DEFAULT'), inset 0 0 5px theme('colors.primary.DEFAULT');
+  }
+}
+
+/* Animations */
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: glow 3s ease-in-out infinite alternate;
+}

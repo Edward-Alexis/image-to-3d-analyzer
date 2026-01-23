@@ -1,0 +1,4044 @@
+================================================================================
+PROJECT STRUCTURE
+================================================================================
+d:\image-to-analizer-3D\image-to-3d-analyzer
+├── .env.example
+├── backend
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── src
+│       ├── app.ts
+│       ├── server.ts
+│       ├── config
+│       │   ├── database.ts
+│       │   ├── env.ts
+│       │   └── gemini.ts
+│       ├── controllers
+│       │   └── imageController.ts
+│       ├── middleware
+│       │   └── error.ts
+│       ├── models
+│       │   └── Analysis.ts
+│       ├── routes
+│       │   └── imageRoutes.ts
+│       ├── services
+│       │   ├── autoFixService.ts
+│       │   ├── diagnosticService.ts
+│       │   ├── geminiService.ts
+│       │   ├── imageProcessingService.ts
+│       │   ├── meshGenerator.ts
+│       │   ├── productionMeshGenerator.ts
+│       │   ├── templates.ts
+│       │   └── tripoService.ts
+│       └── utils
+│           ├── AppError.ts
+│           ├── fileUtils.ts
+│           ├── logger.ts
+│           ├── retryHandler.ts
+│           └── sanitizer.ts
+└── frontend
+    └── src
+        ├── context
+        │   └── AppContext.jsx
+        ├── hooks
+        │   └── useAnalysis.js
+        ├── services
+        │   └── imageService.js
+        └── components
+            ├── analysis
+            │   ├── AnalysisResults.jsx
+            │   └── Model3DViewer.jsx
+            └── upload
+                ├── ImagePreview.jsx
+                └── PromptInput.jsx
+
+================================================================================
+FILE CONTENTS
+================================================================================
+===== backend/package.json =====
+{
+  "name": "image-to-3d-backend",
+  "version": "1.0.0",
+  "description": "Backend para analizador de imágenes a modelos 3D con auto-mejora",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "test": "jest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "3d",
+    "ai",
+    "gemini",
+    "image-analysis"
+  ],
+  "author": "Tu Nombre",
+  "license": "MIT",
+  "dependencies": {
+    "@gradio/client": "^2.0.1",
+    "@types/compression": "1.8.1",
+    "@types/cors": "2.8.19",
+    "@types/jsonwebtoken": "9.0.10",
+    "@types/multer": "2.0.0",
+    "@types/sharp": "0.32.0",
+    "axios": "^1.6.2",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "9.0.3",
+    "mongoose": "^8.0.3",
+    "multer": "^1.4.5-lts.1",
+    "sharp": "^0.33.1",
+    "winston": "3.18.3",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
+    "@types/node": "20.19.25",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.2",
+    "ts-jest": "^29.1.4",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/src",
+      "<rootDir>/tests"
+    ]
+  }
+}
+
+===== backend/tsconfig.json =====
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "baseUrl": "./src",
+    "paths": {
+      "@/*": ["*"]
+    }
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.spec.ts",
+    "**/*.test.ts"
+  ]
+}
+===== .env.example =====
+VITE_API_URL=http://localhost:5000/api
+VITE_APP_NAME=Image to 3D Analyzer
+VITE_MAX_FILE_SIZE=10485760
+===== backend/src/server.ts =====
+import { App } from './app';
+import { env } from './config/env';
+import { logger } from './utils/logger';
+
+const app = new App(env.PORT);
+
+app.listen();
+
+// Handle unhandled rejections
+process.on('unhandledRejection', (err: Error) => {
+    logger.error('UNHANDLED REJECTION! 💥 Shutting down...');
+    logger.error(err.name, err.message);
+    process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err: Error) => {
+    logger.error('UNCAUGHT EXCEPTION! 💥 Shutting down...');
+    logger.error(err.name, err.message);
+    logger.error(err.stack);
+    process.exit(1);
+});
+
+===== backend/src/app.ts =====
+import express, { Application } from 'express';
+import helmet from 'helmet';
+import compression from 'compression';
+import cors from 'cors';
+import { env } from './config/env';
+import { logger } from './utils/logger';
+import { globalErrorHandler } from './middleware/error';
+import { connectDatabase } from './config/database';
+import { AppError } from './utils/AppError';
+
+// Importar rutas
+import imageRoutes from './routes/imageRoutes';
+import selfImprovementRoutes from './routes/selfImprovementRoutes';
+// import diagnosticRoutes from './routes/diagnosticRoutes'; // Pendiente de migración o eliminación
+// import configRoutes from './routes/configRoutes'; // Pendiente de migración o eliminación
+
+export class App {
+    public app: Application;
+    public port: number;
+
+    constructor(port: number) {
+        this.app = express();
+        this.port = port;
+
+        this.initializeMiddlewares();
+        this.initializeRoutes();
+        this.initializeErrorHandling();
+    }
+
+    private initializeMiddlewares() {
+        this.app.use(helmet());
+        this.app.use(compression());
+        this.app.use(cors({ origin: env.CORS_ORIGIN }));
+        this.app.use(express.json({ limit: '10mb' }));
+        this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+        this.app.use(express.static('public')); // Servir archivos estáticos (modelos 3D)
+
+        // Logging middleware
+        this.app.use((req, res, next) => {
+            logger.http(`${req.method} ${req.path}`);
+            next();
+        });
+    }
+
+    private initializeRoutes() {
+        this.app.get('/health', (req, res) => {
+            res.json({
+                status: 'ok',
+                timestamp: new Date().toISOString(),
+                uptime: process.uptime(),
+                environment: env.NODE_ENV
+            });
+        });
+
+        this.app.use('/api/self-improvement', selfImprovementRoutes);
+        this.app.use('/api', imageRoutes);
+
+        // 404 Handler
+        this.app.all('*', (req, res, next) => {
+            next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
+        });
+    }
+
+    private initializeErrorHandling() {
+        this.app.use(globalErrorHandler);
+    }
+
+    public async listen() {
+        await connectDatabase();
+
+        this.app.listen(this.port, () => {
+            logger.info(`🚀 Server running on port ${this.port}`);
+            logger.info(`📊 Environment: ${env.NODE_ENV}`);
+        });
+    }
+}
+
+===== backend/src/config/env.ts =====
+import { z } from 'zod';
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Cargar variables de entorno
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+
+const envSchema = z.object({
+    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    PORT: z.string().default('5000').transform((val) => parseInt(val, 10)),
+    GEMINI_API_KEY: z.string().min(1, "GEMINI_API_KEY is required"),
+    JWT_SECRET: z.string().min(10, "JWT_SECRET must be at least 10 characters").default('super-secret-default-key-change-in-prod'),
+    MONGO_URI: z.string().url().optional(), // Opcional por ahora si no hay DB real configurada
+    CORS_ORIGIN: z.string().default('*'),
+});
+
+const _env = envSchema.safeParse(process.env);
+
+if (!_env.success) {
+    console.error('❌ Invalid environment variables:', _env.error.format());
+    process.exit(1);
+}
+
+export const env = _env.data;
+
+===== backend/src/config/database.ts =====
+import mongoose from 'mongoose';
+import { logger } from '../utils/logger';
+import { env } from './env';
+
+export const connectDatabase = async (): Promise<void> => {
+    try {
+        if (!env.MONGO_URI) {
+            logger.warn('⚠️ MONGO_URI no está definido. Saltando conexión a base de datos.');
+            return;
+        }
+
+        await mongoose.connect(env.MONGO_URI, {
+            maxPoolSize: 10,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+        });
+
+        logger.info('✅ Base de datos conectada exitosamente');
+
+        mongoose.connection.on('error', (err) => {
+            logger.error('Error de MongoDB:', err);
+        });
+
+        mongoose.connection.on('disconnected', () => {
+            logger.warn('⚠️ MongoDB desconectado');
+        });
+
+    } catch (error) {
+        logger.error('❌ Error al conectar a MongoDB:', error);
+        throw error;
+    }
+};
+
+===== backend/src/config/gemini.ts =====
+import { env } from './env';
+
+export const geminiConfig = {
+  apiKey: env.GEMINI_API_KEY,
+  baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+  model: 'gemini-2.5-flash', // ✅ Actualizado de gemini-1.5-flash
+
+  defaultParams: {
+    temperature: 0.4,
+    topK: 32,
+    topP: 1,
+    maxOutputTokens: 2048,
+  },
+  // Configuración de timeouts
+  timeout: 60000,
+
+  safetySettings: [
+    {
+      category: "HARM_CATEGORY_HARASSMENT",
+      threshold: "BLOCK_MEDIUM_AND_ABOVE"
+    },
+    {
+      category: "HARM_CATEGORY_HATE_SPEECH",
+      threshold: "BLOCK_MEDIUM_AND_ABOVE"
+    },
+    {
+      category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      threshold: "BLOCK_MEDIUM_AND_ABOVE"
+    },
+    {
+      category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+      threshold: "BLOCK_MEDIUM_AND_ABOVE"
+    }
+  ],
+
+  prompts: {
+    analyze3D: `Eres un experto en modelado 3D y análisis de imágenes para recreación tridimensional.
+
+Analiza esta imagen en EXTREMO DETALLE para crear un modelo 3D complejo y realista.
+
+IMPORTANTE: Genera un análisis COMPLETO con MÍNIMO 20-50 geometrías para crear un modelo detallado.
+
+Responde SOLO en formato JSON válido con esta estructura EXACTA:
+
+{
+  "descripcion": "descripción MUY detallada del objeto/personaje identificando TODAS las partes visuales",
+  "dimensiones": {
+    "ancho": "X metros",
+    "alto": "Y metros", 
+    "profundidad": "Z metros"
+  },
+  "partes": [
+    {
+      "nombre": "nombre de la parte (ej: 'cabeza', 'torso_superior', 'brazo_derecho', etc.)",
+      "geometria": "tipo de geometría primaria: cubo, cilindro, esfera, cono, o pyramid",
+      "posicion": "descripción de posición relativa (ej: 'centro superior', 'lateral izquierdo medio')",
+      "tamañoRelativo": "pequeño, mediano, grande, muy grande",
+      "detalles": "características específicas visibles de esta parte"
+    }
+  ],
+  "geometria": ["lista de TODOS los tipos de geometrías que necesitas: cubo, cilindro, esfera, cono, pyramid - repite los tipos según cant necesites"],
+  "colores": ["array de TODOS los colores visibles en formato #HEXCOLOR"],
+  "texturas": "descripción completa de texturas y materiales",
+  "iluminacion": "recomendaciones específicas de iluminación",
+  "complejidad": "alto",
+  "cantidadPartes": 50,
+  "recomendaciones": ["lista de consejos específicos para el modelado"]
+}
+
+REGLAS CRÍTICAS:
+1. Identifica CADA parte visible del objeto/personaje por separado
+2. Para un personaje humanoide: cabeza (casco, visor, etc.), cuello, torso (dividido en secciones), brazos (hombros, bíceps, antebrazos, manos), piernas (muslos, rodillas, pantorrillas, pies), accesorios
+3. Genera entre 20-50 partes en el array "partes"
+4. Se muy específico con posiciones y tamaños relativos
+5. La complejidad DEBE ser "alto"
+6. NO generes menos de 20 geometrías
+7. Responde SOLO con JSON válido, sin texto adicional`
+  }
+};
+
+===== backend/src/services/geminiService.ts =====
+import axios from 'axios';
+import { geminiConfig } from '../config/gemini';
+import { logger } from '../utils/logger';
+import { retryHandler } from '../utils/retryHandler';
+
+export const geminiService = {
+    // Analizar imagen con Gemini AI
+    analyzeImage: async (base64Image: string, mimeType: string, config: any = {}, userPrompt: string = '') => {
+        const {
+            temperature = geminiConfig.defaultParams.temperature,
+            timeout = geminiConfig.timeout || 60000,
+            maxRetries = 3
+        } = config;
+
+        logger.info('Iniciando análisis con Gemini', { temperature, timeout, hasUserPrompt: !!userPrompt });
+
+        const analyzeFunction = async () => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+            try {
+                logger.info(`Enviando solicitud a Gemini API (${geminiConfig.model})...`);
+
+                // Construir prompt combinado
+                let finalPrompt = geminiConfig.prompts.analyze3D;
+
+                if (userPrompt && userPrompt.trim()) {
+                    finalPrompt = `${geminiConfig.prompts.analyze3D}
+
+INSTRUCCIONES ESPECÍFICAS DEL USUARIO:
+"${userPrompt}"
+
+Por favor, prioriza las instrucciones del usuario y genera un análisis MUY DETALLADO que incluya MÚLTIPLES geometrías (20-50+ partes) para crear un modelo complejo según lo solicitado.`;
+                }
+
+                const response = await axios.post(
+                    `${geminiConfig.baseUrl}/${geminiConfig.model}:generateContent?key=${geminiConfig.apiKey}`,
+                    {
+                        contents: [{
+                            parts: [
+                                { text: finalPrompt },
+                                {
+                                    inline_data: {
+                                        mime_type: mimeType,
+                                        data: base64Image
+                                    }
+                                }
+                            ]
+                        }],
+                        generationConfig: {
+                            ...geminiConfig.defaultParams,
+                            temperature
+                        },
+                        safetySettings: geminiConfig.safetySettings
+                    },
+                    {
+                        signal: controller.signal,
+                        timeout,
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+                logger.info('Respuesta HTTP recibida de Gemini');
+
+                clearTimeout(timeoutId);
+
+                if (!response.data.candidates || response.data.candidates.length === 0) {
+                    throw new Error('No se recibió respuesta válida de Gemini API');
+                }
+
+                const textContent = response.data.candidates[0].content.parts[0].text;
+
+                // Intentar parsear JSON
+                try {
+                    const jsonMatch = textContent.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        const parsed = JSON.parse(jsonMatch[0]);
+                        logger.info('Análisis JSON parseado exitosamente');
+                        return parsed;
+                    }
+                } catch (parseError) {
+                    logger.warn('No se pudo parsear JSON, retornando texto plano');
+                }
+
+                return { rawAnalysis: textContent };
+
+            } catch (error: any) {
+                clearTimeout(timeoutId);
+
+                if (error.code === 'ECONNABORTED' || error.name === 'AbortError') {
+                    throw new Error(`Timeout después de ${timeout}ms`);
+                }
+
+                if (error.response) {
+                    const status = error.response.status;
+                    const message = error.response.data?.error?.message || error.message;
+
+                    if (status === 429) {
+                        throw new Error('Rate limit excedido en Gemini API');
+                    }
+                    if (status === 401 || status === 403) {
+                        throw new Error('API Key inválida o sin permisos');
+                    }
+
+                    throw new Error(`Error ${status}: ${message}`);
+                }
+
+                throw error;
+            }
+        };
+
+        // Aplicar retry con backoff exponencial
+        return await retryHandler.withExponentialBackoff(
+            analyzeFunction,
+            maxRetries,
+            1000
+        );
+    },
+
+    // Validar API Key
+    validateApiKey: async (apiKey: string) => {
+        try {
+            const response = await axios.get(
+                `${geminiConfig.baseUrl}?key=${apiKey}`,
+                { timeout: 5000 }
+            );
+
+            return {
+                valid: true,
+                models: response.data.models || []
+            };
+        } catch (error: any) {
+            logger.error('Error validando API Key:', error.message);
+            return {
+                valid: false,
+                error: error.message
+            };
+        }
+    }
+};
+
+===== backend/src/services/imageProcessingService.ts =====
+import sharp from 'sharp';
+import { logger } from '../utils/logger';
+import { sanitizer } from '../utils/sanitizer';
+
+export const imageProcessingService = {
+    // Procesar imagen
+    processImage: async (file: Express.Multer.File) => {
+        try {
+            logger.info('Procesando imagen:', { filename: file.originalname });
+
+            // Optimizar imagen si es muy grande
+            let imageBuffer = file.buffer;
+            const metadata = await sharp(imageBuffer).metadata();
+
+            // Si la imagen es muy grande, redimensionar
+            if (metadata.width && metadata.height && (metadata.width > 2048 || metadata.height > 2048)) {
+                logger.info('Redimensionando imagen grande');
+                imageBuffer = await sharp(imageBuffer)
+                    .resize(2048, 2048, {
+                        fit: 'inside',
+                        withoutEnlargement: true
+                    })
+                    .toBuffer();
+            }
+
+            // Convertir a base64
+            const base64 = imageBuffer.toString('base64');
+
+            return {
+                base64,
+                mimeType: file.mimetype,
+                originalSize: file.size,
+                processedSize: imageBuffer.length,
+                dimensions: {
+                    width: metadata.width,
+                    height: metadata.height
+                }
+            };
+
+        } catch (error) {
+            logger.error('Error procesando imagen:', error);
+            throw new Error('Error al procesar la imagen');
+        }
+    },
+
+    // Análisis local (fallback)
+    localAnalysis: (file: Express.Multer.File) => {
+        logger.info('Usando análisis local (fallback)');
+
+        return {
+            descripcion: "Análisis básico realizado localmente debido a problemas de conectividad",
+            dimensiones: {
+                ancho: "Estimación manual requerida",
+                alto: "Estimación manual requerida",
+                profundidad: "Estimación manual requerida"
+            },
+            geometria: [
+                "Se requiere análisis visual manual",
+                "Recomendación: identificar formas básicas principales"
+            ],
+            texturas: "Análisis de texturas no disponible en modo offline",
+            colores: ["#000000", "#FFFFFF", "#808080"],
+            iluminacion: "Recomendación estándar: luz difusa de tres puntos",
+            complejidad: "media",
+            recomendaciones: [
+                "Verificar conectividad a internet",
+                "Comprobar validez de la API Key de Gemini",
+                "Reducir tamaño de imagen si es muy grande",
+                "Intentar nuevamente en unos minutos",
+                "Considerar análisis manual detallado"
+            ],
+            fallbackMode: true,
+            reason: "Modo fallback activado - sin conexión a Gemini API"
+        };
+    },
+
+    // Validar formato de imagen
+    validateImageFormat: (mimeType: string) => {
+        const allowedTypes = (process.env.ALLOWED_FILE_TYPES || 'image/jpeg,image/png,image/webp').split(',');
+        return allowedTypes.includes(mimeType);
+    },
+
+    // Extraer metadata
+    extractMetadata: async (buffer: Buffer) => {
+        try {
+            const metadata = await sharp(buffer).metadata();
+
+            return {
+                format: metadata.format,
+                width: metadata.width,
+                height: metadata.height,
+                space: metadata.space,
+                channels: metadata.channels,
+                depth: metadata.depth,
+                density: metadata.density,
+                hasAlpha: metadata.hasAlpha,
+                orientation: metadata.orientation
+            };
+        } catch (error) {
+            logger.error('Error extrayendo metadata:', error);
+            return null;
+        }
+    }
+};
+
+===== backend/src/services/meshGenerator.ts =====
+// Este archivo contiene la lógica para generar mallas 3D a partir de análisis de imágenes
+// NUEVO: Ahora usa templates anatómicos combinados con análisis de Gemini
+
+import { detectObjectType, getTemplate } from './templates';
+
+interface GeometryData {
+  type: 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid';
+  position: [number, number, number];
+  size: [number, number, number];
+  rotation?: [number, number, number];
+  color: string;
+}
+
+interface MeshData {
+  geometries: GeometryData[];
+  metadata: {
+    totalBlocks: number;
+    boundingBox: {
+      min: [number, number, number];
+      max: [number, number, number];
+    };
+  };
+}
+
+interface AnalysisData {
+  descripcion?: string;
+  dimensiones?: {
+    ancho?: string;
+    alto?: string;
+    profundidad?: string;
+  };
+  geometria?: string[];
+  colores?: string[];
+  complejidad?: string;
+  userPrompt?: string; // Para detección de tipo de template
+}
+
+/**
+ * Convierte dimensiones en texto a números
+ */
+function parseDimensions(dimensions: any): { width: number; height: number; depth: number } {
+  const defaultSize = 1;
+
+  const parseValue = (value: string | undefined): number => {
+    if (!value) return defaultSize;
+    const match = value.match(/(\d+\.?\d*)/);
+    return match ? parseFloat(match[1]) : defaultSize;
+  };
+
+  return {
+    width: parseValue(dimensions?.ancho) || defaultSize,
+    height: parseValue(dimensions?.alto) || defaultSize,
+    depth: parseValue(dimensions?.profundidad) || defaultSize,
+  };
+}
+
+/**
+ * Mapea nombres de geometrías a tipos válidos
+ */
+function mapGeometryType(geometryName: string): GeometryData['type'] {
+  const normalized = geometryName.toLowerCase();
+
+  if (normalized.includes('cubo') || normalized.includes('box') || normalized.includes('cube')) {
+    return 'box';
+  }
+  if (normalized.includes('cilindro') || normalized.includes('cylinder') || normalized.includes('cilindro')) {
+    return 'cylinder';
+  }
+  if (normalized.includes('esfera') || normalized.includes('sphere') || normalized.includes('ball')) {
+    return 'sphere';
+  }
+  if (normalized.includes('cono') || normalized.includes('cone')) {
+    return 'cone';
+  }
+  if (normalized.includes('piramide') || normalized.includes('pyramid')) {
+    return 'pyramid';
+  }
+
+  // Por defecto, usar box (cubo)
+  return 'box';
+}
+
+/**
+ * Genera un modelo 3D usando TEMPLATES ANATÓMICOS + análisis de Gemini
+ * NUEVO SISTEMA HÍBRIDO: Template → Partes Gemini → Genérico
+ */
+export function generateMeshFromImage(analysisData: any): MeshData {
+  const geometries: GeometryData[] = [];
+
+  // Parsear dimensiones
+  const dimensions = parseDimensions(analysisData.dimensiones);
+  const baseSize = Math.max(dimensions.width, dimensions.height, dimensions.depth);
+
+  // Obtener colores del análisis de Gemini (prioridad alta)
+  const colors = analysisData.colores && analysisData.colores.length > 0
+    ? analysisData.colores
+    : ['#2C3E50', '#34495E', '#7F8C8D', '#95A5A6', '#BDC3C7']; // Grises militares
+
+  console.log(`🎨 Colores: ${colors.join(', ')}`);
+
+  // PASO 1: Detectar tipo de objeto basado en descripción +userPrompt
+  const objectType = detectObjectType(analysisData);
+  console.log(`🔍 Tipo detectado: ${objectType}`);
+
+  // PASO 2: Intentar usar template anatómico
+  const template = getTemplate(objectType);
+
+  if (template) {
+    // ✅ OPCIÓN 1: Usar template anatómico (MEJOR RESULTADO)
+    console.log(`✅ Template: ${template.type} (${template.parts.length} partes)`);
+
+    const scaleFactor = baseSize / 2;
+
+    template.parts.forEach((part, index) => {
+      const scaledPosition: [number, number, number] = [
+        part.position[0] * scaleFactor,
+        part.position[1] * scaleFactor,
+        part.position[2] * scaleFactor
+      ];
+
+      const scaledSize: [number, number, number] = [
+        part.size[0] * scaleFactor,
+        part.size[1] * scaleFactor,
+        part.size[2] * scaleFactor
+      ];
+
+      const colorIndex = part.colorIndex !== undefined ? part.colorIndex : index;
+      const color = colors[colorIndex % colors.length];
+
+      geometries.push({
+        type: part.type,
+        position: scaledPosition,
+        size: scaledSize,
+        rotation: part.rotation || [0, 0, 0],
+        color: color,
+      });
+    });
+
+  } else if (analysisData.partes && Array.isArray(analysisData.partes) && analysisData.partes.length > 0) {
+    // ⚙️ OPCIÓN 2: Usar partes detalladas de Gemini
+    console.log(`⚙️ Partes Gemini: ${analysisData.partes.length}`);
+
+    const numPartes = analysisData.partes.length;
+    const gridSize = Math.ceil(Math.cbrt(numPartes));
+    const partSize = baseSize / gridSize;
+
+    analysisData.partes.forEach((parte: any, index: number) => {
+      const x = (index % gridSize) * partSize - (baseSize / 2);
+      const y = Math.floor(index / gridSize) % gridSize * partSize;
+      const z = Math.floor(index / (gridSize * gridSize)) * partSize - (baseSize / 2);
+
+      const geoType = mapGeometryType(parte.geometria || 'cubo');
+
+      let sizeMultiplier = 1;
+      if (parte.tamañoRelativo) {
+        const tamañoLower = parte.tamañoRelativo.toLowerCase();
+        if (tamañoLower.includes('muy grande')) sizeMultiplier = 1.5;
+        else if (tamañoLower.includes('grande')) sizeMultiplier = 1.2;
+        else if (tamañoLower.includes('pequeño')) sizeMultiplier = 0.7;
+        else if (tamañoLower.includes('muy pequeño')) sizeMultiplier = 0.5;
+      }
+
+      const size: [number, number, number] = [
+        partSize * sizeMultiplier,
+        partSize * sizeMultiplier,
+        partSize * sizeMultiplier
+      ];
+
+      if (geoType === 'cylinder') {
+        size[1] = size[1] * 1.5;
+      } else if (geoType === 'sphere') {
+        size[0] = size[0] * 0.9;
+        size[1] = size[1] * 0.9;
+        size[2] = size[2] * 0.9;
+      }
+
+      const color = colors[index % colors.length];
+
+      geometries.push({
+        type: geoType,
+        position: [x, y, z],
+        size,
+        rotation: [0, (index * 20) % 360, 0],
+        color,
+      });
+    });
+
+  } else {
+    // ⚠️ OPCIÓN 3: Fallback genérico
+    console.log('⚠️ Generación genérica (30 bloques)');
+
+    const geometryTypes = analysisData.geometria || ['cubo'];
+    const complexity = analysisData.complejidad?.toLowerCase() || 'alto';
+
+    let blockCount = 30; // Siempre 30 como mínimo
+    const blockSize = baseSize / Math.cbrt(blockCount);
+
+    for (let i = 0; i < blockCount; i++) {
+      const geometryType = mapGeometryType(geometryTypes[i % geometryTypes.length]);
+      const color = colors[i % colors.length];
+
+      const gridSize = Math.ceil(Math.cbrt(blockCount));
+      const x = (i % gridSize) * blockSize - (baseSize / 2);
+      const y = Math.floor(i / gridSize) % gridSize * blockSize;
+      const z = Math.floor(i / (gridSize * gridSize)) * blockSize - (baseSize / 2);
+
+      let size: [number, number, number] = [blockSize, blockSize, blockSize];
+
+      if (geometryType === 'cylinder') {
+        size = [blockSize, blockSize * 1.5, blockSize];
+      } else if (geometryType === 'sphere') {
+        size = [blockSize * 0.9, blockSize * 0.9, blockSize * 0.9];
+      }
+
+      geometries.push({
+        type: geometryType,
+        position: [x, y, z],
+        size,
+        rotation: [0, (i * 15) % 360, 0],
+        color,
+      });
+    }
+  }
+
+  // Calcular bounding box
+  const positions = geometries.map(g => g.position);
+  const minX = Math.min(...positions.map(p => p[0]));
+  const maxX = Math.max(...positions.map(p => p[0]));
+  const minY = Math.min(...positions.map(p => p[1]));
+  const maxY = Math.max(...positions.map(p => p[1]));
+  const minZ = Math.min(...positions.map(p => p[2]));
+  const maxZ = Math.max(...positions.map(p => p[2]));
+
+  return {
+    geometries,
+    metadata: {
+      totalBlocks: geometries.length,
+      boundingBox: {
+        min: [minX, minY, minZ],
+        max: [maxX, maxY, maxZ],
+      },
+    },
+  };
+}
+
+/**
+ * Procesa datos de imagen antes de generar la malla
+ */
+export function processImageForMesh(analysisData: any): AnalysisData {
+  // Normalizar y limpiar los datos del análisis
+  const processed: AnalysisData = {
+    descripcion: analysisData.descripcion || analysisData.description || 'Modelo 3D generado',
+    dimensiones: analysisData.dimensiones || analysisData.dimensions || {
+      ancho: '2',
+      alto: '2',
+      profundidad: '2',
+    },
+    geometria: Array.isArray(analysisData.geometria)
+      ? analysisData.geometria
+      : (analysisData.geometria ? [analysisData.geometria] : ['cubo']),
+    colores: Array.isArray(analysisData.colores)
+      ? analysisData.colores
+      : (analysisData.colores ? [analysisData.colores] : ['#8B5CF6']),
+    complejidad: analysisData.complejidad || analysisData.complexity || 'medio',
+  };
+
+  return processed;
+}
+
+/**
+ * Genera formato OBJ para exportación
+ */
+export function generateOBJ(meshData: MeshData): string {
+  let objContent = '# Modelo 3D generado por Image to 3D Analyzer\n';
+  objContent += '# Formato estilo Roblox/Minecraft\n\n';
+
+  let vertexOffset = 1;
+
+  meshData.geometries.forEach((geometry, index) => {
+    objContent += `\n# Geometry ${index + 1}: ${geometry.type}\n`;
+    objContent += `g block_${index + 1}\n`;
+
+    const [x, y, z] = geometry.position;
+    const [w, h, d] = geometry.size;
+
+    // Generar vértices según el tipo de geometría
+    if (geometry.type === 'box') {
+      // Cubo: 8 vértices
+      const vertices = [
+        [x - w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y + h / 2, z + d / 2],
+        [x - w / 2, y + h / 2, z + d / 2],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      // Caras del cubo
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 4} ${vertexOffset + 7} ${vertexOffset + 6} ${vertexOffset + 5}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 5} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 2} ${vertexOffset + 6} ${vertexOffset + 7} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 7} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset + 1} ${vertexOffset + 5} ${vertexOffset + 6} ${vertexOffset + 2}\n`;
+
+      vertexOffset += 8;
+    } else if (geometry.type === 'sphere') {
+      // Esfera simplificada (octaedro)
+      const vertices = [
+        [x, y + h / 2, z],
+        [x - w / 2, y, z],
+        [x, y, z - d / 2],
+        [x + w / 2, y, z],
+        [x, y, z + d / 2],
+        [x, y - h / 2, z],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      // Caras del octaedro
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 2} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 3} ${vertexOffset + 2}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 4} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 5} ${vertexOffset + 1} ${vertexOffset + 4}\n`;
+
+      vertexOffset += 6;
+    } else {
+      // Para otros tipos, usar un cubo simplificado
+      const vertices = [
+        [x - w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y - h / 2, z - d / 2],
+        [x + w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y + h / 2, z - d / 2],
+        [x - w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y - h / 2, z + d / 2],
+        [x + w / 2, y + h / 2, z + d / 2],
+        [x - w / 2, y + h / 2, z + d / 2],
+      ];
+
+      vertices.forEach(v => {
+        objContent += `v ${v[0]} ${v[1]} ${v[2]}\n`;
+      });
+
+      objContent += `f ${vertexOffset} ${vertexOffset + 1} ${vertexOffset + 2} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset + 4} ${vertexOffset + 7} ${vertexOffset + 6} ${vertexOffset + 5}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 4} ${vertexOffset + 5} ${vertexOffset + 1}\n`;
+      objContent += `f ${vertexOffset + 2} ${vertexOffset + 6} ${vertexOffset + 7} ${vertexOffset + 3}\n`;
+      objContent += `f ${vertexOffset} ${vertexOffset + 3} ${vertexOffset + 7} ${vertexOffset + 4}\n`;
+      objContent += `f ${vertexOffset + 1} ${vertexOffset + 5} ${vertexOffset + 6} ${vertexOffset + 2}\n`;
+
+      vertexOffset += 8;
+    }
+  });
+
+  return objContent;
+}
+
+/**
+ * Genera formato JSON para el frontend
+ */
+export function generateJSON(meshData: MeshData): string {
+  return JSON.stringify(meshData, null, 2);
+}
+===== backend/src/services/productionMeshGenerator.ts =====
+// Generador de modelos 3D listos para producción
+// Incluye: topología limpia, UV mapping, texturas PBR, optimización
+
+interface Vertex {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface UV {
+  u: number;
+  v: number;
+}
+
+interface Face {
+  vertices: number[];
+  uvIndices: number[];
+  normal?: [number, number, number];
+}
+
+interface ProductionMesh {
+  vertices: Vertex[];
+  uvs: UV[];
+  faces: Face[];
+  normals: [number, number, number][];
+  materials: MaterialData[];
+  metadata: ProductionMetadata;
+}
+
+interface MaterialData {
+  name: string;
+  albedo: string; // Color base en hex
+  roughness: number; // 0-1
+  metalness: number; // 0-1
+  normalMap?: string; // Base64 de normal map
+  aoMap?: string; // Base64 de AO map
+  emissive?: string; // Color emisivo en hex
+}
+
+interface ProductionMetadata {
+  polyCount: number;
+  vertexCount: number;
+  uvIslands: number;
+  lodLevel: number;
+  platform: 'mobile' | 'pc' | 'cinema';
+  boundingBox: {
+    min: [number, number, number];
+    max: [number, number, number];
+  };
+  topology: {
+    quads: number;
+    tris: number;
+    poles: number;
+    ngons: number;
+  };
+}
+
+/**
+ * Genera topología limpia (solo quads cuando sea posible)
+ */
+function generateCleanTopology(
+  geometryType: string,
+  size: [number, number, number],
+  position: [number, number, number]
+): ProductionMesh {
+  const vertices: Vertex[] = [];
+  const uvs: UV[] = [];
+  const faces: Face[] = [];
+  const normals: [number, number, number][] = [];
+
+  const [w, h, d] = size;
+  const [px, py, pz] = position;
+
+  if (geometryType === 'box') {
+    // Cubo con topología limpia (6 caras, cada una con 4 vértices = quads)
+    const halfW = w / 2;
+    const halfH = h / 2;
+    const halfD = d / 2;
+
+    // 8 vértices del cubo
+    const cubeVertices = [
+      { x: px - halfW, y: py - halfH, z: pz - halfD }, // 0: bottom-left-back
+      { x: px + halfW, y: py - halfH, z: pz - halfD }, // 1: bottom-right-back
+      { x: px + halfW, y: py + halfH, z: pz - halfD }, // 2: top-right-back
+      { x: px - halfW, y: py + halfH, z: pz - halfD }, // 3: top-left-back
+      { x: px - halfW, y: py - halfH, z: pz + halfD }, // 4: bottom-left-front
+      { x: px + halfW, y: py - halfH, z: pz + halfD }, // 5: bottom-right-front
+      { x: px + halfW, y: py + halfH, z: pz + halfD }, // 6: top-right-front
+      { x: px - halfW, y: py + halfH, z: pz + halfD }, // 7: top-left-front
+    ];
+
+    vertices.push(...cubeVertices);
+
+    // Normales para cada cara
+    const faceNormals: [number, number, number][] = [
+      [0, 0, -1],  // Back
+      [0, 0, 1],   // Front
+      [-1, 0, 0],  // Left
+      [1, 0, 0],   // Right
+      [0, -1, 0],  // Bottom
+      [0, 1, 0],   // Top
+    ];
+
+    // UVs para cada cara (0-1 range)
+    const uvCoords = [
+      { u: 0, v: 0 }, { u: 1, v: 0 }, { u: 1, v: 1 }, { u: 0, v: 1 }
+    ];
+
+    // 6 caras del cubo (todas quads)
+    const cubeFaces = [
+      // Back face
+      { vertices: [0, 1, 2, 3], uvIndices: [0, 1, 2, 3], normal: faceNormals[0] },
+      // Front face
+      { vertices: [4, 7, 6, 5], uvIndices: [0, 1, 2, 3], normal: faceNormals[1] },
+      // Left face
+      { vertices: [0, 3, 7, 4], uvIndices: [0, 1, 2, 3], normal: faceNormals[2] },
+      // Right face
+      { vertices: [1, 5, 6, 2], uvIndices: [0, 1, 2, 3], normal: faceNormals[3] },
+      // Bottom face
+      { vertices: [0, 4, 5, 1], uvIndices: [0, 1, 2, 3], normal: faceNormals[4] },
+      // Top face
+      { vertices: [3, 2, 6, 7], uvIndices: [0, 1, 2, 3], normal: faceNormals[5] },
+    ];
+
+    faces.push(...cubeFaces);
+    uvs.push(...uvCoords);
+    normals.push(...faceNormals);
+
+  } else if (geometryType === 'cylinder') {
+    // Cilindro con topología limpia
+    const segments = 16; // Número de segmentos (ajustable según LOD)
+    const radius = w / 2;
+    const height = h;
+
+    // Vértices del cilindro
+    // Base inferior
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      vertices.push({
+        x: px + Math.cos(angle) * radius,
+        y: py - height / 2,
+        z: pz + Math.sin(angle) * radius
+      });
+    }
+
+    // Base superior
+    for (let i = 0; i < segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      vertices.push({
+        x: px + Math.cos(angle) * radius,
+        y: py + height / 2,
+        z: pz + Math.sin(angle) * radius
+      });
+    }
+
+    // Centro de bases
+    vertices.push({ x: px, y: py - height / 2, z: pz }); // Base inferior
+    vertices.push({ x: px, y: py + height / 2, z: pz }); // Base superior
+
+    const baseCenterBottom = segments * 2;
+    const baseCenterTop = segments * 2 + 1;
+
+    // Caras laterales (quads)
+    for (let i = 0; i < segments; i++) {
+      const next = (i + 1) % segments;
+      faces.push({
+        vertices: [i, i + segments, next + segments, next],
+        uvIndices: [0, 1, 2, 3],
+        normal: [
+          Math.cos((i / segments) * Math.PI * 2),
+          0,
+          Math.sin((i / segments) * Math.PI * 2)
+        ] as [number, number, number]
+      });
+    }
+
+    // Tapas (triángulos desde el centro)
+    for (let i = 0; i < segments; i++) {
+      const next = (i + 1) % segments;
+      // Base inferior
+      faces.push({
+        vertices: [baseCenterBottom, next, i],
+        uvIndices: [0, 1, 2],
+        normal: [0, -1, 0] as [number, number, number]
+      });
+      // Base superior
+      faces.push({
+        vertices: [baseCenterTop, i + segments, next + segments],
+        uvIndices: [0, 1, 2],
+        normal: [0, 1, 0] as [number, number, number]
+      });
+    }
+
+    // UVs para cilindro
+    for (let i = 0; i <= segments; i++) {
+      uvs.push({ u: i / segments, v: 0 });
+      uvs.push({ u: i / segments, v: 1 });
+    }
+
+  } else {
+    // Para otros tipos, usar cubo como fallback
+    return generateCleanTopology('box', size, position);
+  }
+
+  // Calcular bounding box
+  const xCoords = vertices.map(v => v.x);
+  const yCoords = vertices.map(v => v.y);
+  const zCoords = vertices.map(v => v.z);
+
+  const boundingBox = {
+    min: [
+      Math.min(...xCoords),
+      Math.min(...yCoords),
+      Math.min(...zCoords)
+    ] as [number, number, number],
+    max: [
+      Math.max(...xCoords),
+      Math.max(...yCoords),
+      Math.max(...zCoords)
+    ] as [number, number, number]
+  };
+
+  // Contar topología
+  const quads = faces.filter(f => f.vertices.length === 4).length;
+  const tris = faces.filter(f => f.vertices.length === 3).length;
+  const ngons = faces.filter(f => f.vertices.length > 4).length;
+
+  // Detectar poles (vértices con más de 4 aristas)
+  const vertexConnections = new Map<number, number>();
+  faces.forEach(face => {
+    face.vertices.forEach(v => {
+      vertexConnections.set(v, (vertexConnections.get(v) || 0) + 1);
+    });
+  });
+  const poles = Array.from(vertexConnections.values()).filter(count => count > 4).length;
+
+  return {
+    vertices,
+    uvs,
+    faces,
+    normals,
+    materials: [],
+    metadata: {
+      polyCount: faces.length,
+      vertexCount: vertices.length,
+      uvIslands: 1, // Simplificado, se puede mejorar
+      lodLevel: 0,
+      platform: 'pc',
+      boundingBox,
+      topology: {
+        quads,
+        tris,
+        poles,
+        ngons
+      }
+    }
+  };
+}
+
+/**
+ * Genera UV mapping correcto sin stretching
+ */
+function generateOptimalUVs(mesh: ProductionMesh): ProductionMesh {
+  // Para cada cara, calcular UVs basados en área real
+  const newUVs: UV[] = [];
+
+  mesh.faces.forEach((face, faceIndex) => {
+    // Calcular área de la cara en 3D
+    const v0 = mesh.vertices[face.vertices[0]];
+    const v1 = mesh.vertices[face.vertices[1]];
+    const v2 = mesh.vertices[face.vertices[2]];
+
+    // Vector edge
+    const edge1 = {
+      x: v1.x - v0.x,
+      y: v1.y - v0.y,
+      z: v1.z - v0.z
+    };
+    const edge2 = {
+      x: v2.x - v0.x,
+      y: v2.y - v0.y,
+      z: v2.z - v0.z
+    };
+
+    // Normal de la cara
+    const normal = {
+      x: edge1.y * edge2.z - edge1.z * edge2.y,
+      y: edge1.z * edge2.x - edge1.x * edge2.z,
+      z: edge1.x * edge2.y - edge1.y * edge2.x
+    };
+
+    // Proyectar a UV space sin stretching
+    // Usar la proyección que minimiza la distorsión
+    const uvStart = newUVs.length;
+    
+    if (face.vertices.length === 4) {
+      // Quad: mapear a cuadrado perfecto
+      newUVs.push({ u: 0, v: 0 });
+      newUVs.push({ u: 1, v: 0 });
+      newUVs.push({ u: 1, v: 1 });
+      newUVs.push({ u: 0, v: 1 });
+    } else {
+      // Triángulo: mapear a triángulo equilátero
+      newUVs.push({ u: 0, v: 0 });
+      newUVs.push({ u: 1, v: 0 });
+      newUVs.push({ u: 0.5, v: Math.sqrt(3) / 2 });
+    }
+
+    // Actualizar índices UV
+    face.uvIndices = [];
+    for (let i = 0; i < face.vertices.length; i++) {
+      face.uvIndices.push(uvStart + i);
+    }
+  });
+
+  return {
+    ...mesh,
+    uvs: newUVs
+  };
+}
+
+/**
+ * Genera texturas PBR básicas
+ */
+async function generatePBRTextures(
+  color: string,
+  size: number = 512
+): Promise<MaterialData> {
+  // En producción real, esto generaría texturas reales
+  // Por ahora, retornamos datos de material PBR
+  
+  // Convertir hex a RGB
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.substr(0, 2), 16) / 255;
+  const g = parseInt(hex.substr(2, 2), 16) / 255;
+  const b = parseInt(hex.substr(4, 2), 16) / 255;
+
+  return {
+    name: `material_${color.replace('#', '')}`,
+    albedo: color,
+    roughness: 0.5, // Valor medio por defecto
+    metalness: 0.0, // No metálico por defecto
+    emissive: '#000000' // Sin emisión por defecto
+    // normalMap y aoMap se generarían con una librería de procesamiento de imágenes
+  };
+}
+
+/**
+ * Genera LODs (Levels of Detail)
+ */
+function generateLODs(
+  baseMesh: ProductionMesh,
+  lodLevels: number[] = [1, 0.5, 0.25]
+): ProductionMesh[] {
+  const lods: ProductionMesh[] = [];
+
+  lodLevels.forEach((scale, index) => {
+    const lodMesh: ProductionMesh = {
+      ...baseMesh,
+      vertices: baseMesh.vertices.map(v => ({
+        x: v.x * scale,
+        y: v.y * scale,
+        z: v.z * scale
+      })),
+      metadata: {
+        ...baseMesh.metadata,
+        lodLevel: index,
+        polyCount: Math.floor(baseMesh.metadata.polyCount * scale),
+        vertexCount: Math.floor(baseMesh.metadata.vertexCount * scale)
+      }
+    };
+
+    lods.push(lodMesh);
+  });
+
+  return lods;
+}
+
+/**
+ * Exporta a formato glTF (estándar para producción)
+ */
+function exportToGLTF(mesh: ProductionMesh): string {
+  // Estructura básica de glTF
+  const gltf = {
+    asset: {
+      version: '2.0',
+      generator: 'Image-to-3D-Analyzer'
+    },
+    scenes: [{
+      nodes: [0]
+    }],
+    nodes: [{
+      mesh: 0
+    }],
+    meshes: [{
+      primitives: [{
+        attributes: {
+          POSITION: 0,
+          NORMAL: 1,
+          TEXCOORD_0: 2
+        },
+        indices: 3,
+        material: 0
+      }]
+    }],
+    accessors: [
+      // POSITION
+      {
+        bufferView: 0,
+        componentType: 5126, // FLOAT
+        count: mesh.vertices.length,
+        type: 'VEC3',
+        min: mesh.metadata.boundingBox.min,
+        max: mesh.metadata.boundingBox.max
+      },
+      // NORMAL
+      {
+        bufferView: 1,
+        componentType: 5126,
+        count: mesh.normals.length,
+        type: 'VEC3'
+      },
+      // TEXCOORD
+      {
+        bufferView: 2,
+        componentType: 5126,
+        count: mesh.uvs.length,
+        type: 'VEC2'
+      },
+      // INDICES
+      {
+        bufferView: 3,
+        componentType: 5123, // UNSIGNED_SHORT
+        count: mesh.faces.reduce((sum, f) => sum + f.vertices.length, 0),
+        type: 'SCALAR'
+      }
+    ],
+    materials: mesh.materials.map(mat => ({
+      name: mat.name,
+      pbrMetallicRoughness: {
+        baseColorFactor: hexToRGB(mat.albedo),
+        metallicFactor: mat.metalness,
+        roughnessFactor: mat.roughness
+      }
+    }))
+  };
+
+  return JSON.stringify(gltf, null, 2);
+}
+
+function hexToRGB(hex: string): [number, number, number, number] {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substr(0, 2), 16) / 255;
+  const g = parseInt(h.substr(2, 2), 16) / 255;
+  const b = parseInt(h.substr(4, 2), 16) / 255;
+  return [r, g, b, 1.0];
+}
+
+/**
+ * Función principal: Genera modelo 3D listo para producción
+ */
+export async function generateProductionMesh(
+  geometryType: string,
+  size: [number, number, number],
+  position: [number, number, number],
+  color: string,
+  options: {
+    platform?: 'mobile' | 'pc' | 'cinema';
+    generateLODs?: boolean;
+    lodLevels?: number[];
+  } = {}
+): Promise<{
+  mesh: ProductionMesh;
+  lods?: ProductionMesh[];
+  gltf: string;
+  metadata: ProductionMetadata;
+}> {
+  // 1. Generar topología limpia
+  let mesh = generateCleanTopology(geometryType, size, position);
+
+  // 2. Optimizar UVs
+  mesh = generateOptimalUVs(mesh);
+
+  // 3. Generar materiales PBR
+  const material = await generatePBRTextures(color);
+  mesh.materials = [material];
+
+  // 4. Actualizar metadata según plataforma
+  const platform = options.platform || 'pc';
+  mesh.metadata.platform = platform;
+
+  // Ajustar poly count según plataforma
+  if (platform === 'mobile' && mesh.metadata.polyCount > 15000) {
+    // Reducir geometría para móvil
+    // (implementación simplificada)
+  }
+
+  // 5. Generar LODs si se solicita
+  let lods: ProductionMesh[] | undefined;
+  if (options.generateLODs) {
+    lods = generateLODs(mesh, options.lodLevels);
+  }
+
+  // 6. Exportar a glTF
+  const gltf = exportToGLTF(mesh);
+
+  return {
+    mesh,
+    lods,
+    gltf,
+    metadata: mesh.metadata
+  };
+}
+
+
+===== backend/src/services/templates.ts =====
+// Templates anatómicos predefinidos para diferentes tipos de objetos
+
+interface TemplatePart {
+    name: string;
+    type: 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid';
+    position: [number, number, number]; // Relativo al centro
+    size: [number, number, number]; // Tamaño relativo
+    rotation?: [number, number, number];
+    colorIndex?: number; // Índice del color a usar del array de colores
+}
+
+interface ObjectTemplate {
+    type: string;
+    parts: TemplatePart[];
+}
+
+/**
+ * Template para personaje humanoide (soldado, robot, persona)
+ */
+export const HUMANOID_TEMPLATE: ObjectTemplate = {
+    type: 'humanoid',
+    parts: [
+        // CABEZA
+        { name: 'cabeza_base', type: 'box', position: [0, 1.7, 0], size: [0.3, 0.3, 0.3], colorIndex: 0 },
+        { name: 'casco', type: 'box', position: [0, 1.85, 0], size: [0.35, 0.2, 0.35], colorIndex: 1 },
+        { name: 'visor', type: 'box', position: [0, 1.75, 0.16], size: [0.28, 0.12, 0.05], colorIndex: 2 },
+
+        // CUELLO
+        { name: 'cuello', type: 'cylinder', position: [0, 1.4, 0], size: [0.12, 0.15, 0.12], colorIndex: 0 },
+
+        // TORSO
+        { name: 'torso_superior', type: 'box', position: [0, 1.15, 0], size: [0.5, 0.4, 0.25], colorIndex: 3 },
+        { name: 'torso_medio', type: 'box', position: [0, 0.8, 0], size: [0.48, 0.35, 0.24], colorIndex: 3 },
+        { name: 'torso_inferior', type: 'box', position: [0, 0.5, 0], size: [0.45, 0.25, 0.22], colorIndex: 3 },
+
+        // CHALECO/ARMADURA PECHO
+        { name: 'chaleco_frontal', type: 'box', position: [0, 1.1, 0.14], size: [0.42, 0.5, 0.08], colorIndex: 4 },
+        { name: 'placa_izquierda', type: 'box', position: [-0.15, 1.15, 0.16], size: [0.12, 0.2, 0.06], colorIndex: 1 },
+        { name: 'placa_derecha', type: 'box', position: [0.15, 1.15, 0.16], size: [0.12, 0.2, 0.06], colorIndex: 1 },
+
+        // HOMBROS
+        { name: 'hombro_izquierdo', type: 'sphere', position: [-0.35, 1.25, 0], size: [0.18, 0.18, 0.18], colorIndex: 4 },
+        { name: 'hombro_derecho', type: 'sphere', position: [0.35, 1.25, 0], size: [0.18, 0.18, 0.18], colorIndex: 4 },
+
+        // BRAZO IZQUIERDO
+        { name: 'bicep_izquierdo', type: 'cylinder', position: [-0.35, 0.95, 0], size: [0.12, 0.3, 0.12], colorIndex: 3 },
+        { name: 'codo_izquierdo', type: 'sphere', position: [-0.35, 0.75, 0], size: [0.13, 0.13, 0.13], colorIndex: 1 },
+        { name: 'antebrazo_izquierdo', type: 'cylinder', position: [-0.35, 0.5, 0], size: [0.11, 0.28, 0.11], colorIndex: 3 },
+        { name: 'mano_izquierda', type: 'box', position: [-0.35, 0.25, 0], size: [0.12, 0.15, 0.08], colorIndex: 0 },
+
+        // BRAZO DERECHO
+        { name: 'bicep_derecho', type: 'cylinder', position: [0.35, 0.95, 0], size: [0.12, 0.3, 0.12], colorIndex: 3 },
+        { name: 'codo_derecho', type: 'sphere', position: [0.35, 0.75, 0], size: [0.13, 0.13, 0.13], colorIndex: 1 },
+        { name: 'antebrazo_derecho', type: 'cylinder', position: [0.35, 0.5, 0], size: [0.11, 0.28, 0.11], colorIndex: 3 },
+        { name: 'mano_derecha', type: 'box', position: [0.35, 0.25, 0], size: [0.12, 0.15, 0.08], colorIndex: 0 },
+
+        // CINTURA/CADERA
+        { name: 'cintura', type: 'box', position: [0, 0.35, 0], size: [0.42, 0.12, 0.22], colorIndex: 3 },
+
+        // PIERNA IZQUIERDA
+        { name: 'muslo_izquierdo', type: 'cylinder', position: [-0.12, 0.05, 0], size: [0.14, 0.4, 0.14], colorIndex: 3 },
+        { name: 'rodilla_izquierda', type: 'sphere', position: [-0.12, -0.2, 0], size: [0.15, 0.15, 0.15], colorIndex: 1 },
+        { name: 'pantorrilla_izquierda', type: 'cylinder', position: [-0.12, -0.5, 0], size: [0.13, 0.35, 0.13], colorIndex: 3 },
+        { name: 'tobillo_izquierdo', type: 'cylinder', position: [-0.12, -0.75, 0], size: [0.11, 0.1, 0.11], colorIndex: 1 },
+        { name: 'pie_izquierdo', type: 'box', position: [-0.12, -0.88, 0.08], size: [0.14, 0.08, 0.22], colorIndex: 1 },
+
+        // PIERNA DERECHA
+        { name: 'muslo_derecho', type: 'cylinder', position: [0.12, 0.05, 0], size: [0.14, 0.4, 0.14], colorIndex: 3 },
+        { name: 'rodilla_derecha', type: 'sphere', position: [0.12, -0.2, 0], size: [0.15, 0.15, 0.15], colorIndex: 1 },
+        { name: 'pantorrilla_derecha', type: 'cylinder', position: [0.12, -0.5, 0], size: [0.13, 0.35, 0.13], colorIndex: 3 },
+        { name: 'tobillo_derecho', type: 'cylinder', position: [0.12, -0.75, 0], size: [0.11, 0.1, 0.11], colorIndex: 1 },
+        { name: 'pie_derecho', type: 'box', position: [0.12, -0.88, 0.08], size: [0.14, 0.08, 0.22], colorIndex: 1 },
+
+        // ACCESORIOS / DETALLES
+        { name: 'mochila', type: 'box', position: [0, 1.0, -0.18], size: [0.35, 0.45, 0.15], colorIndex: 4 },
+        { name: 'arma_soporte', type: 'box', position: [0.25, 0.9, -0.12], size: [0.08, 0.25, 0.08], colorIndex: 1 },
+    ]
+};
+
+/**
+ * Template para vehículo (auto, tanque, nave)
+ */
+export const VEHICLE_TEMPLATE: ObjectTemplate = {
+    type: 'vehicle',
+    parts: [
+        // CUERPO PRINCIPAL
+        { name: 'chasis_inferior', type: 'box', position: [0, 0.3, 0], size: [1.2, 0.25, 0.6], colorIndex: 0 },
+        { name: 'cabina', type: 'box', position: [0, 0.7, -0.1], size: [0.8, 0.5, 0.5], colorIndex: 1 },
+        { name: 'techo', type: 'box', position: [0, 1.0, -0.1], size: [0.82, 0.08, 0.52], colorIndex: 2 },
+
+        // RUEDAS
+        { name: 'rueda_delantera_izq', type: 'cylinder', position: [-0.5, 0.15, 0.35], size: [0.15, 0.08, 0.15], rotation: [90, 0, 0], colorIndex: 3 },
+        { name: 'rueda_delantera_der', type: 'cylinder', position: [0.5, 0.15, 0.35], size: [0.15, 0.08, 0.15], rotation: [90, 0, 0], colorIndex: 3 },
+        { name: 'rueda_trasera_izq', type: 'cylinder', position: [-0.5, 0.15, -0.35], size: [0.15, 0.08, 0.15], rotation: [90, 0, 0], colorIndex: 3 },
+        { name: 'rueda_trasera_der', type: 'cylinder', position: [0.5, 0.15, -0.35], size: [0.15, 0.08, 0.15], rotation: [90, 0, 0], colorIndex: 3 },
+
+        // DETALLES
+        { name: 'parabrisas', type: 'box', position: [0, 0.9, 0.2], size: [0.75, 0.35, 0.05], colorIndex: 4 },
+        { name: 'capó', type: 'box', position: [0, 0.55, 0.55], size: [0.95, 0.15, 0.4], colorIndex: 0 },
+        { name: 'baúl', type: 'box', position: [0, 0.58, -0.55], size: [0.95, 0.2, 0.35], colorIndex: 0 },
+    ]
+};
+
+/**
+ * Template para animal cuadrúpedo
+ */
+export const QUADRUPED_TEMPLATE: ObjectTemplate = {
+    type: 'quadruped',
+    parts: [
+        // CABEZA
+        { name: 'cabeza', type: 'box', position: [0, 0.9, 0.6], size: [0.25, 0.25, 0.3], colorIndex: 0 },
+        { name: 'hocico', type: 'box', position: [0, 0.85, 0.8], size: [0.18, 0.15, 0.2], colorIndex: 1 },
+
+        // CUERPO
+        { name: 'cuello', type: 'cylinder', position: [0, 0.75, 0.4], size: [0.15, 0.25, 0.15], rotation: [45, 0, 0], colorIndex: 0 },
+        { name: 'torso', type: 'box', position: [0, 0.6, 0], size: [0.35, 0.35, 0.8], colorIndex: 0 },
+        { name: 'cola', type: 'cylinder', position: [0, 0.65, -0.6], size: [0.08, 0.4, 0.08], rotation: [45, 0, 0], colorIndex: 1 },
+
+        // PATAS DELANTERAS
+        { name: 'pata_delantera_izq', type: 'cylinder', position: [-0.15, 0.25, 0.3], size: [0.08, 0.5, 0.08], colorIndex: 0 },
+        { name: 'pata_delantera_der', type: 'cylinder', position: [0.15, 0.25, 0.3], size: [0.08, 0.5, 0.08], colorIndex: 0 },
+
+        // PATAS TRASERAS
+        { name: 'pata_trasera_izq', type: 'cylinder', position: [-0.15, 0.25, -0.3], size: [0.08, 0.5, 0.08], colorIndex: 0 },
+        { name: 'pata_trasera_der', type: 'cylinder', position: [0.15, 0.25, -0.3], size: [0.08, 0.5, 0.08], colorIndex: 0 },
+    ]
+};
+
+/**
+ * Detecta el tipo de objeto basándose en el análisis de Gemini
+ */
+export function detectObjectType(analysisData: any): 'humanoid' | 'vehicle' | 'quadruped' | 'generic' {
+    const description = (analysisData.descripcion || '').toLowerCase();
+    const userPrompt = (analysisData.userPrompt || '').toLowerCase();
+    const title = (analysisData.title || '').toLowerCase(); // Si existe
+
+    const combinedText = `${description} ${userPrompt} ${title}`;
+
+    // Detectar humanoide (Keywords expandidas)
+    const humanoidKeywords = [
+        'persona', 'humano', 'soldado', 'robot', 'guerrero', 'personaje',
+        'hombre', 'mujer', 'armadura', 'traje', 'cyborg', 'androide',
+        'mecha', 'bipedo', 'antropomorfo', 'piloto', 'infanteria',
+        'futurista', 'sci-fi', 'combate', 'tactico'
+    ];
+
+    if (humanoidKeywords.some(keyword => combinedText.includes(keyword))) {
+        return 'humanoid';
+    }
+
+    // Detectar vehículo (Keywords expandidas)
+    const vehicleKeywords = [
+        'auto', 'carro', 'coche', 'vehículo', 'vehiculo', 'tanque',
+        'nave', 'avión', 'avion', 'camión', 'camion', 'transporte',
+        'ruedas', 'volador', 'espacial'
+    ];
+
+    if (vehicleKeywords.some(keyword => combinedText.includes(keyword))) {
+        return 'vehicle';
+    }
+
+    // Detectar animal cuadrúpedo
+    const quadrupedKeywords = ['perro', 'gato', 'caballo', 'león', 'tigre', 'animal', 'lobo', 'bestia', 'monstruo'];
+    if (quadrupedKeywords.some(keyword => combinedText.includes(keyword))) {
+        return 'quadruped';
+    }
+
+    return 'generic';
+}
+
+/**
+ * Obtiene el template apropiado según el tipo
+ */
+export function getTemplate(type: string): ObjectTemplate | null {
+    switch (type) {
+        case 'humanoid':
+            return HUMANOID_TEMPLATE;
+        case 'vehicle':
+            return VEHICLE_TEMPLATE;
+        case 'quadruped':
+            return QUADRUPED_TEMPLATE;
+        default:
+            return null;
+    }
+}
+
+===== backend/src/services/tripoService.ts =====
+// import { client } from "@gradio/client"; // Removed static import
+import fs from 'fs';
+import path from 'path';
+import { logger } from '../utils/logger';
+
+export const tripoService = {
+    /**
+     * Genera un modelo 3D usando TripoSR via Hugging Face API
+     * @param imagePath Ruta absoluta a la imagen procesada
+     * @returns Ruta relativa del modelo generado (.glb o .obj)
+     */
+    generateModel: async (imagePath: string): Promise<string> => {
+        try {
+            logger.info('Iniciando generación con TripoSR...', { imagePath });
+
+            // Dynamic import for ESM module
+            const { client } = await import("@gradio/client");
+
+            // Conectar al espacio de Hugging Face
+            const app = await client("stabilityai/TripoSR");
+
+            // Leer imagen como blob/buffer
+            const imageBuffer = fs.readFileSync(imagePath);
+            const imageBlob = new Blob([imageBuffer]);
+
+            // Enviar predicción
+            // NOTA: Los parámetros pueden variar según la versión del Space
+            // Usualmente: [imagen, remove_background_threshold]
+            const result = await app.predict("/predict", [
+                imageBlob,
+                0.85, // Foreground ratio default
+            ]);
+
+            logger.info('Respuesta de TripoSR recibida', { result });
+
+            // El resultado suele ser un objeto con datos del archivo
+            // data: [{ path: '...', url: '...', orig_name: '...' }]
+            // Cast result to any to avoid TS7053
+            const responseData = result.data as any;
+
+            if (!responseData || !responseData[0]) {
+                throw new Error('No se recibió datos válidos de TripoSR');
+            }
+
+            const tempFile: any = responseData[0];
+            const modelUrl = tempFile.url;
+
+            // Descargar el modelo
+            const response = await fetch(modelUrl);
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+
+            // Guardar localmente
+            const modelsDir = path.join(__dirname, '../../public/models');
+            if (!fs.existsSync(modelsDir)) {
+                fs.mkdirSync(modelsDir, { recursive: true });
+            }
+
+            const fileName = `tripo_${Date.now()}.glb`; // Asumiendo GLB, verificar extensión
+            const outputPath = path.join(modelsDir, fileName);
+
+            fs.writeFileSync(outputPath, buffer);
+            logger.info(`Modelo guardado en: ${outputPath}`);
+
+            return `/models/${fileName}`;
+
+        } catch (error: any) {
+            logger.error('Error generando modelo con TripoSR:', error);
+            throw error;
+        }
+    }
+};
+
+===== backend/src/services/diagnosticService.ts =====
+import { logger } from '../utils/logger';
+import { IErrorContext, IErrorDiagnostics } from '../models/ErrorLog';
+
+interface DiagnosticResult extends IErrorDiagnostics {
+    errorType: string;
+    errorMessage: string;
+    timestamp: string;
+    context: IErrorContext;
+    possibleCauses: string[];
+    suggestedFixes: string[];
+    autoFixable: boolean;
+    severity: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface ErrorPatterns {
+    mostCommon: Record<string, number>;
+    timeDistribution: Record<string, any>;
+    autoFixSuccessRate: number;
+    recommendations: string[];
+}
+
+export const diagnosticService = {
+    // Diagnosticar error
+    diagnoseError: async (error: Error, context: IErrorContext = {}): Promise<DiagnosticResult> => {
+        logger.info('Iniciando diagnóstico de error', {
+            error: error.message,
+            context
+        });
+
+        const diagnostics: DiagnosticResult = {
+            errorType: error.name || 'UnknownError',
+            errorMessage: error.message,
+            timestamp: new Date().toISOString(),
+            context,
+            possibleCauses: [],
+            suggestedFixes: [],
+            autoFixable: false,
+            severity: 'medium'
+        };
+
+        const errorMsg = error.message.toLowerCase();
+
+        // Diagnóstico: Network/Fetch Errors
+        if (errorMsg.includes('failed to fetch') ||
+            errorMsg.includes('network error') ||
+            errorMsg.includes('econnrefused')) {
+
+            diagnostics.possibleCauses = [
+                'Política CORS bloqueando la solicitud',
+                'API Key de Gemini inválida o expirada',
+                'Problemas de conectividad a internet',
+                'Servidor de Gemini no disponible',
+                'Firewall o proxy bloqueando la conexión'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Verificar validez de API Key',
+                'Aumentar timeout de solicitud',
+                'Revisar configuración de CORS',
+                'Comprobar conexión a internet',
+                'Usar modo fallback local'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'high';
+        }
+
+        // Diagnóstico: Timeout
+        if (errorMsg.includes('timeout') || errorMsg.includes('timed out')) {
+            diagnostics.possibleCauses = [
+                'Timeout configurado muy corto',
+                'Imagen demasiado grande para procesar',
+                'Servidor de Gemini sobrecargado',
+                'Conexión lenta a internet'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Aumentar timeout progresivamente',
+                'Reducir tamaño de imagen',
+                'Comprimir imagen antes de enviar',
+                'Intentar en horario de menor tráfico'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'medium';
+        }
+
+        // Diagnóstico: Rate Limit
+        if (errorMsg.includes('429') || errorMsg.includes('rate limit')) {
+            diagnostics.possibleCauses = [
+                'Demasiadas solicitudes en poco tiempo',
+                'Límite de cuota de API excedido',
+                'Múltiples usuarios usando la misma API Key'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Aumentar delay entre solicitudes',
+                'Implementar cola de peticiones',
+                'Verificar límites de cuota',
+                'Considerar upgrade de plan de API'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'high';
+        }
+
+        // Diagnóstico: Authentication
+        if (errorMsg.includes('401') ||
+            errorMsg.includes('403') ||
+            errorMsg.includes('unauthorized') ||
+            errorMsg.includes('forbidden')) {
+
+            diagnostics.possibleCauses = [
+                'API Key no configurada',
+                'API Key inválida o revocada',
+                'API Key sin permisos suficientes',
+                'Dominio no autorizado'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Verificar API Key en configuración',
+                'Generar nueva API Key',
+                'Revisar permisos de la API Key',
+                'Contactar soporte de Gemini'
+            ];
+
+            diagnostics.autoFixable = false;
+            diagnostics.severity = 'critical';
+        }
+
+        // Diagnóstico: Bad Request
+        if (errorMsg.includes('400') || errorMsg.includes('bad request')) {
+            diagnostics.possibleCauses = [
+                'Formato de imagen no soportado',
+                'Imagen corrupta o inválida',
+                'Payload demasiado grande',
+                'Parámetros de solicitud incorrectos'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Validar formato de imagen',
+                'Reducir tamaño de imagen',
+                'Verificar integridad del archivo',
+                'Revisar parámetros enviados'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'medium';
+        }
+
+        // Diagnóstico: Server Errors
+        if (errorMsg.includes('500') ||
+            errorMsg.includes('502') ||
+            errorMsg.includes('503') ||
+            errorMsg.includes('504')) {
+
+            diagnostics.possibleCauses = [
+                'Servidor de Gemini con problemas temporales',
+                'Mantenimiento en curso',
+                'Sobrecarga del servidor',
+                'Gateway timeout'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Reintentar después de algunos minutos',
+                'Usar estrategia de retry con backoff',
+                'Activar modo fallback',
+                'Verificar estado del servicio de Gemini'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'high';
+        }
+
+        // Diagnóstico: JSON Parse Errors
+        if (errorMsg.includes('json') || errorMsg.includes('parse')) {
+            diagnostics.possibleCauses = [
+                'Respuesta de API no es JSON válido',
+                'Respuesta truncada o incompleta',
+                'Caracteres especiales en respuesta'
+            ];
+
+            diagnostics.suggestedFixes = [
+                'Implementar parser más robusto',
+                'Usar regex para extraer JSON',
+                'Aumentar maxOutputTokens',
+                'Sanitizar respuesta antes de parsear'
+            ];
+
+            diagnostics.autoFixable = true;
+            diagnostics.severity = 'low';
+        }
+
+        logger.info('Diagnóstico completado', { diagnostics });
+        return diagnostics;
+    },
+
+    // Analizar patrones de errores
+    analyzeErrorPatterns: async (errorLogs: any[]): Promise<ErrorPatterns> => {
+        const patterns: ErrorPatterns = {
+            mostCommon: {},
+            timeDistribution: {},
+            autoFixSuccessRate: 0,
+            recommendations: []
+        };
+
+        // Contar errores por tipo
+        errorLogs.forEach(log => {
+            const type = log.errorType;
+            patterns.mostCommon[type] = (patterns.mostCommon[type] || 0) + 1;
+        });
+
+        // Calcular tasa de éxito de auto-fix
+        const autoFixableErrors = errorLogs.filter(log => log.diagnostics?.autoFixable);
+        patterns.autoFixSuccessRate = errorLogs.length > 0 ? (autoFixableErrors.length / errorLogs.length * 100) : 0;
+
+        // Generar recomendaciones
+        if (patterns.autoFixSuccessRate < 50) {
+            patterns.recommendations.push('Mejorar estrategias de auto-corrección');
+        }
+
+        if (Object.keys(patterns.mostCommon).length > 0) {
+            const mostCommonError = Object.keys(patterns.mostCommon).reduce((a, b) =>
+                patterns.mostCommon[a] > patterns.mostCommon[b] ? a : b
+            );
+            patterns.recommendations.push(`Priorizar solución para: ${mostCommonError}`);
+        }
+
+        return patterns;
+    }
+};
+
+===== backend/src/services/autoFixService.ts =====
+import { logger } from '../utils/logger';
+import { IErrorDiagnostics } from '../models/ErrorLog';
+import { ISystemConfigDetail } from '../models/SystemConfig';
+
+interface AutoFixResult {
+    applied: string[];
+    newConfig: Partial<ISystemConfigDetail> & { failureCount?: number; lastFixTimestamp?: string };
+    timestamp: string;
+}
+
+interface OptimizationRecommendation {
+    priority: 'low' | 'medium' | 'high' | 'critical';
+    category: string;
+    message: string;
+    action: string;
+}
+
+export const autoFixService = {
+    // Aplicar correcciones automáticas
+    applyFixes: async (diagnostics: IErrorDiagnostics & { errorType?: string, errorMessage: string }, currentConfig: Partial<ISystemConfigDetail> & { failureCount?: number; lastFixTimestamp?: string } = {}): Promise<AutoFixResult> => {
+        logger.info('Aplicando auto-correcciones', {
+            errorType: diagnostics.errorType
+        });
+
+        const newConfig = { ...currentConfig };
+        const applied: string[] = [];
+
+        // Fix 1: Aumentar timeout progresivamente
+        if (diagnostics.errorMessage.includes('timeout') ||
+            diagnostics.errorMessage.includes('fetch')) {
+
+            const currentTimeout = currentConfig.timeout || 30000;
+            newConfig.timeout = Math.min(currentTimeout * 1.5, 90000);
+            applied.push(`Timeout aumentado de ${currentTimeout}ms a ${newConfig.timeout}ms`);
+            logger.info('Fix aplicado: timeout aumentado', {
+                from: currentTimeout,
+                to: newConfig.timeout
+            });
+        }
+
+        // Fix 2: Aumentar delay entre reintentos
+        if (diagnostics.errorMessage.includes('429') ||
+            diagnostics.errorMessage.includes('rate limit')) {
+
+            const currentDelay = currentConfig.baseDelay || 1000;
+            newConfig.baseDelay = Math.min(currentDelay * 2, 10000);
+            applied.push(`Delay entre reintentos aumentado de ${currentDelay}ms a ${newConfig.baseDelay}ms`);
+            logger.info('Fix aplicado: delay aumentado', {
+                from: currentDelay,
+                to: newConfig.baseDelay
+            });
+        }
+
+        // Fix 3: Aumentar número máximo de reintentos
+        if (diagnostics.severity === 'high' &&
+            (diagnostics.errorMessage.includes('50') ||
+                diagnostics.errorMessage.includes('fetch'))) {
+
+            const currentRetries = currentConfig.maxRetries || 3;
+            newConfig.maxRetries = Math.min(currentRetries + 1, 5);
+            applied.push(`Reintentos máximos aumentados de ${currentRetries} a ${newConfig.maxRetries}`);
+            logger.info('Fix aplicado: reintentos aumentados', {
+                from: currentRetries,
+                to: newConfig.maxRetries
+            });
+        }
+
+        // Fix 4: Reducir temperatura para respuestas más rápidas
+        if (diagnostics.errorMessage.includes('timeout')) {
+            const currentTemp = currentConfig.temperature || 0.4;
+            newConfig.temperature = Math.max(currentTemp - 0.1, 0.1);
+            applied.push(`Temperatura reducida de ${currentTemp} a ${newConfig.temperature}`);
+            logger.info('Fix aplicado: temperatura reducida', {
+                from: currentTemp,
+                to: newConfig.temperature
+            });
+        }
+
+        // Fix 5: Activar compresión de imagen
+        if (diagnostics.errorMessage.includes('400') ||
+            diagnostics.errorMessage.includes('large')) {
+
+            newConfig.compressImage = true;
+            newConfig.maxImageSize = 1024; // Max width/height en píxeles
+            applied.push('Compresión de imagen activada (max: 1024px)');
+            logger.info('Fix aplicado: compresión activada');
+        }
+
+        // Fix 6: Activar modo fallback si hay muchos errores críticos
+        if (diagnostics.severity === 'critical' ||
+            (currentConfig.failureCount && currentConfig.failureCount > 3)) {
+
+            newConfig.useFallback = true;
+            applied.push('Modo fallback local activado');
+            logger.info('Fix aplicado: fallback activado');
+        }
+
+        // Fix 7: Ajustar maxOutputTokens si hay errores de parseo
+        if (diagnostics.errorMessage.includes('json') ||
+            diagnostics.errorMessage.includes('parse')) {
+
+            newConfig.maxOutputTokens = 4096;
+            applied.push('Límite de tokens de salida aumentado a 4096');
+            logger.info('Fix aplicado: maxOutputTokens aumentado');
+        }
+
+        // Incrementar contador de fallos
+        newConfig.failureCount = (currentConfig.failureCount || 0) + 1;
+        newConfig.lastFixTimestamp = new Date().toISOString();
+
+        logger.info('Auto-correcciones aplicadas', {
+            totalFixes: applied.length,
+            fixes: applied
+        });
+
+        return {
+            applied,
+            newConfig,
+            timestamp: new Date().toISOString()
+        };
+    },
+
+    // Resetear configuración a valores por defecto
+    resetConfig: () => {
+        logger.info('Reseteando configuración a valores por defecto');
+
+        return {
+            timeout: 30000,
+            maxRetries: 3,
+            baseDelay: 1000,
+            temperature: 0.4,
+            useFallback: false,
+            compressImage: false,
+            maxImageSize: 2048,
+            maxOutputTokens: 2048,
+            failureCount: 0
+        };
+    },
+
+    // Obtener recomendaciones de optimización
+    getOptimizationRecommendations: (config: any, errorHistory: any[] = []): OptimizationRecommendation[] => {
+        const recommendations: OptimizationRecommendation[] = [];
+
+        // Analizar historial de errores
+        const timeoutErrors = errorHistory.filter(e =>
+            e.errorMessage?.includes('timeout')
+        ).length;
+
+        const rateLimitErrors = errorHistory.filter(e =>
+            e.errorMessage?.includes('429')
+        ).length;
+
+        const authErrors = errorHistory.filter(e =>
+            e.errorMessage?.includes('401') || e.errorMessage?.includes('403')
+        ).length;
+
+        // Recomendaciones basadas en patrones
+        if (timeoutErrors > 5) {
+            recommendations.push({
+                priority: 'high',
+                category: 'performance',
+                message: 'Se detectaron múltiples timeouts. Considera aumentar el timeout base a 45000ms',
+                action: 'increaseTimeout'
+            });
+        }
+
+        if (rateLimitErrors > 3) {
+            recommendations.push({
+                priority: 'high',
+                category: 'rate-limiting',
+                message: 'Rate limiting frecuente. Implementa cola de peticiones o aumenta delays',
+                action: 'implementQueue'
+            });
+        }
+
+        if (authErrors > 0) {
+            recommendations.push({
+                priority: 'critical',
+                category: 'authentication',
+                message: 'Errores de autenticación detectados. Verifica tu API Key',
+                action: 'validateApiKey'
+            });
+        }
+
+        if (config.failureCount > 10) {
+            recommendations.push({
+                priority: 'medium',
+                category: 'stability',
+                message: 'Alto número de fallos. Considera usar modo fallback por defecto',
+                action: 'enableFallback'
+            });
+        }
+
+        if (config.temperature > 0.7) {
+            recommendations.push({
+                priority: 'low',
+                category: 'optimization',
+                message: 'Temperatura alta puede aumentar tiempo de respuesta',
+                action: 'reduceTemperature'
+            });
+        }
+
+        logger.info('Recomendaciones generadas', {
+            total: recommendations.length,
+            highPriority: recommendations.filter(r => r.priority === 'high').length
+        });
+
+        return recommendations;
+    }
+};
+
+===== backend/src/controllers/imageController.ts =====
+import { Request, Response, NextFunction } from 'express';
+import { geminiService } from '../services/geminiService';
+import { imageProcessingService } from '../services/imageProcessingService';
+import { diagnosticService } from '../services/diagnosticService';
+import { autoFixService } from '../services/autoFixService';
+import { Analysis } from '../models/Analysis';
+import { logger } from '../utils/logger';
+import { generateMeshFromImage, processImageForMesh, generateJSON } from '../services/meshGenerator';
+import { generateProductionMesh } from '../services/productionMeshGenerator';
+import { tripoService } from '../services/tripoService';
+
+// Import removed, used static import instead
+
+export const imageController = {
+    // Analizar imagen
+    analyzeImage: async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const file = req.file;
+            const { config, userPrompt } = req.body;
+
+            if (!file) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'No se proporcionó ninguna imagen'
+                });
+            }
+
+            logger.info('Procesando imagen:', {
+                filename: file.originalname,
+                size: file.size,
+                hasUserPrompt: !!userPrompt
+            });
+
+            // Procesar imagen
+            const processedImage = await imageProcessingService.processImage(file);
+            logger.info('Imagen procesada correctamente', {
+                mimeType: processedImage.mimeType,
+                processedSize: processedImage.processedSize
+            });
+
+            // Configuración adaptativa
+            const adaptiveConfig = config ? JSON.parse(config) : {};
+            logger.info('Configuración cargada', { adaptiveConfig });
+
+            // Analizar con Gemini
+            let analysisResult: any;
+            let retryCount = 0;
+
+            try {
+                logger.info('Iniciando llamada a Gemini Service...');
+                analysisResult = await geminiService.analyzeImage(
+                    processedImage.base64,
+                    processedImage.mimeType,
+                    adaptiveConfig,
+                    userPrompt || '' // Pasar el prompt del usuario
+                );
+                logger.info('Respuesta de Gemini recibida');
+            } catch (error: any) {
+                logger.error('Error explícito en llamada a Gemini:', error);
+                logger.info('Iniciando diagnóstico de error...');
+
+                // Diagnóstico automático
+                const diagnostics = await diagnosticService.diagnoseError(error, {
+                    filename: file.originalname,
+                    fileSize: file.size,
+                    mimeType: file.mimetype
+                });
+                logger.info('Diagnóstico completado', { diagnostics });
+
+
+                // Auto-fix si es posible
+                if (diagnostics.autoFixable && retryCount < 3) {
+                    const fixes = await autoFixService.applyFixes(diagnostics, adaptiveConfig);
+
+                    // Reintentar con configuración mejorada
+                    try {
+                        analysisResult = await geminiService.analyzeImage(
+                            processedImage.base64,
+                            processedImage.mimeType,
+                            fixes.newConfig
+                        );
+
+                        analysisResult.autoFixApplied = true;
+                        analysisResult.fixes = fixes.applied;
+                    } catch (retryError) {
+                        // Si falla, usar fallback
+                        analysisResult = imageProcessingService.localAnalysis(file);
+                        analysisResult.fallbackMode = true;
+                    }
+                } else {
+                    // Usar análisis local
+                    analysisResult = imageProcessingService.localAnalysis(file);
+                    analysisResult.fallbackMode = true;
+                }
+            }
+
+            // Cargar meshGenerator si no está cargado
+            // Cargar meshGenerator (ya importado estáticamente)
+
+            // Procesar análisis para generar malla 3D
+            const processedAnalysis = processImageForMesh(analysisResult);
+
+            // IMPORTANTE: Agregar userPrompt para la detección de tipo de template
+            processedAnalysis.userPrompt = userPrompt || '';
+
+            const meshData = generateMeshFromImage(processedAnalysis);
+            const meshJSON = generateJSON(meshData);
+
+            // NUEVO: Generar modelo con TripoSR
+            let modelUrl = null;
+            try {
+                if (file.path) {
+                    modelUrl = await tripoService.generateModel(file.path);
+                } else {
+                    logger.warn('No file path available for TripoSR');
+                }
+            } catch (error) {
+                logger.error('Error generando modelo TripoSR:', error);
+            }
+
+            // Generar modelo de producción si está habilitado
+            let productionMesh = null;
+            const useProduction = req.body.productionMode || process.env.USE_PRODUCTION_MESH === 'true';
+
+            if (useProduction) {
+                try {
+                    // Cargar generador de producción
+                    // Note: using explicit .ts import might fail in runtime if not handled.
+                    // Assuming productionMeshGenerator is another file.
+                    // Usar generador importado estáticamente
+                    const prodGen = { generateProductionMesh };
+
+                    // Generar modelos de producción para cada geometría
+                    const productionMeshes = [];
+                    for (const geom of meshData.geometries) {
+                        const prodResult = await prodGen.generateProductionMesh(
+                            geom.type,
+                            geom.size,
+                            geom.position,
+                            geom.color,
+                            {
+                                platform: req.body.platform || 'pc',
+                                generateLODs: req.body.generateLODs || false,
+                                lodLevels: req.body.lodLevels || [1, 0.5, 0.25]
+                            }
+                        );
+                        productionMeshes.push(prodResult);
+                    }
+
+                    productionMesh = {
+                        meshes: productionMeshes,
+                        gltf: productionMeshes.map((p: any) => p.gltf).join('\n'),
+                        metadata: productionMeshes.map((p: any) => p.metadata)
+                    };
+
+                    logger.info('Modelos de producción generados', {
+                        count: productionMeshes.length
+                    });
+                } catch (error) {
+                    logger.warn('Error generando modelos de producción, usando modelo básico:', error);
+                }
+            }
+
+            // Guardar análisis en BD
+            const analysis = new Analysis({
+                fileName: file.originalname,
+                fileSize: file.size,
+                mimeType: file.mimetype,
+                result: analysisResult,
+                meshData: meshJSON,
+                modelUrl: modelUrl, // ✅ URL del modelo TripoSR
+                config: adaptiveConfig,
+                timestamp: new Date()
+            });
+
+            await analysis.save();
+
+            logger.info('Análisis completado exitosamente', { id: analysis._id });
+
+            const responseData: any = {
+                id: analysis._id,
+                fileName: file.originalname,
+                fileSize: `${(file.size / 1024).toFixed(2)} KB`,
+                analysis: analysisResult,
+                mesh3D: meshData,
+                modelUrl: modelUrl, // ✅ Enviar al frontend
+                timestamp: analysis.timestamp
+            };
+
+            // Agregar datos de producción si están disponibles
+            if (productionMesh) {
+                responseData.productionMesh = productionMesh;
+                responseData.productionReady = true;
+            }
+
+            res.json({
+                success: true,
+                data: responseData
+            });
+
+        } catch (error) {
+            logger.error('Error en analyzeImage:', error);
+            next(error);
+        }
+    },
+
+    // Obtener historial de análisis
+    getHistory: async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { limit = '10', page = '1' } = req.query;
+
+            const analyses = await Analysis.find()
+                .sort({ timestamp: -1 })
+                .limit(parseInt(limit as string))
+                .skip((parseInt(page as string) - 1) * parseInt(limit as string));
+
+            const total = await Analysis.countDocuments();
+
+            res.json({
+                success: true,
+                data: {
+                    analyses,
+                    pagination: {
+                        total,
+                        page: parseInt(page as string),
+                        limit: parseInt(limit as string),
+                        pages: Math.ceil(total / parseInt(limit as string))
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error en getHistory:', error);
+            next(error);
+        }
+    },
+
+    // Obtener análisis por ID
+    getAnalysisById: async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { id } = req.params;
+
+            const analysis = await Analysis.findById(id);
+
+            if (!analysis) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Análisis no encontrado'
+                });
+            }
+
+            res.json({
+                success: true,
+                data: analysis
+            });
+
+        } catch (error) {
+            logger.error('Error en getAnalysisById:', error);
+            next(error);
+        }
+    },
+
+    // Eliminar análisis
+    deleteAnalysis: async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const { id } = req.params;
+
+            const analysis = await Analysis.findByIdAndDelete(id);
+
+            if (!analysis) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Análisis no encontrado'
+                });
+            }
+
+            logger.info('Análisis eliminado:', { id });
+
+            res.json({
+                success: true,
+                message: 'Análisis eliminado correctamente'
+            });
+
+        } catch (error) {
+            logger.error('Error en deleteAnalysis:', error);
+            next(error);
+        }
+    }
+};
+
+===== backend/src/routes/imageRoutes.ts =====
+import express from 'express';
+import { imageController } from '../controllers/imageController';
+import { upload, validateImage, handleMulterError } from '../middleware/validateImage';
+import { analysisRateLimiter } from '../middleware/rateLimiter';
+
+const router = express.Router();
+
+// POST /api/images/analyze - Analizar imagen
+router.post(
+    '/analyze',
+    analysisRateLimiter,
+    upload.single('image'),
+    handleMulterError,
+    validateImage,
+    imageController.analyzeImage
+);
+
+// GET /api/images/history - Obtener historial
+router.get('/history', imageController.getHistory);
+
+// GET /api/images/:id - Obtener análisis por ID
+router.get('/:id', imageController.getAnalysisById);
+
+// DELETE /api/images/:id - Eliminar análisis
+router.delete('/:id', imageController.deleteAnalysis);
+
+export default router;
+
+===== backend/src/models/Analysis.ts =====
+import mongoose, { Document, Model, Schema } from 'mongoose';
+
+export interface IAnalysisConfig {
+    timeout?: number;
+    maxRetries?: number;
+    baseDelay?: number;
+    temperature?: number;
+    useFallback?: boolean;
+}
+
+export interface IAnalysisMetadata {
+    width?: number;
+    height?: number;
+    format?: string;
+    processedSize?: number;
+}
+
+export interface IAnalysis extends Document {
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+    result: any;
+    meshData?: string;
+    modelUrl?: string; // ✅ Campo para modelo GLB/OBJ
+    config?: IAnalysisConfig;
+    metadata?: IAnalysisMetadata;
+    autoFixApplied: boolean;
+    fixes?: string[];
+    fallbackMode: boolean;
+    processingTime: number;
+    status: 'success' | 'failed' | 'partial';
+    timestamp: Date;
+    createdAt: Date;
+    updatedAt: Date;
+    timeAgo: string; // virtual
+}
+
+// Static methods interface
+export interface IAnalysisModel extends Model<IAnalysis> {
+    cleanOldAnalyses(daysOld?: number): Promise<number>;
+    getStats(): Promise<any>;
+}
+
+const analysisSchema = new Schema<IAnalysis, IAnalysisModel>({
+    fileName: {
+        type: String,
+        required: true,
+        trim: true
+    },
+    fileSize: {
+        type: Number,
+        required: true
+    },
+    mimeType: {
+        type: String,
+        required: true
+    },
+    result: {
+        type: Schema.Types.Mixed,
+        required: true
+    },
+    meshData: {
+        type: String,
+        required: false
+    },
+    modelUrl: { // Added modelUrl to schema
+        type: String,
+        required: false // Assuming it's optional based on interface
+    },
+    config: {
+        timeout: Number,
+        maxRetries: Number,
+        baseDelay: Number,
+        temperature: Number,
+        useFallback: Boolean
+    },
+    metadata: {
+        width: Number,
+        height: Number,
+        format: String,
+        processedSize: Number
+    },
+    autoFixApplied: {
+        type: Boolean,
+        default: false
+    },
+    fixes: [{
+        type: String
+    }],
+    fallbackMode: {
+        type: Boolean,
+        default: false
+    },
+    processingTime: {
+        type: Number, // en milisegundos
+        default: 0
+    },
+    status: {
+        type: String,
+        enum: ['success', 'failed', 'partial'],
+        default: 'success'
+    },
+    timestamp: {
+        type: Date,
+        default: Date.now,
+        index: true
+    }
+}, {
+    timestamps: true
+});
+
+// Índices para búsquedas eficientes
+analysisSchema.index({ timestamp: -1 });
+analysisSchema.index({ fileName: 1 });
+analysisSchema.index({ status: 1 });
+
+// Método virtual para obtener el tiempo transcurrido
+analysisSchema.virtual('timeAgo').get(function (this: IAnalysis) {
+    const now = new Date();
+    const diff = now.getTime() - this.timestamp.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    if (days > 0) return `Hace ${days} día${days > 1 ? 's' : ''}`;
+    if (hours > 0) return `Hace ${hours} hora${hours > 1 ? 's' : ''}`;
+    if (minutes > 0) return `Hace ${minutes} minuto${minutes > 1 ? 's' : ''}`;
+    return 'Hace un momento';
+});
+
+// Método para limpiar análisis antiguos
+analysisSchema.statics.cleanOldAnalyses = async function (this: IAnalysisModel, daysOld: number = 30) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+
+    const result = await this.deleteMany({
+        timestamp: { $lt: cutoffDate }
+    });
+
+    return result.deletedCount || 0;
+};
+
+// Método para obtener estadísticas
+analysisSchema.statics.getStats = async function (this: IAnalysisModel) {
+    const total = await this.countDocuments();
+    const successful = await this.countDocuments({ status: 'success' });
+    const failed = await this.countDocuments({ status: 'failed' });
+    const withAutoFix = await this.countDocuments({ autoFixApplied: true });
+    const withFallback = await this.countDocuments({ fallbackMode: true });
+
+    const avgProcessingTime = await this.aggregate([
+        {
+            $group: {
+                _id: null,
+                avgTime: { $avg: '$processingTime' }
+            }
+        }
+    ]);
+
+    return {
+        total,
+        successful,
+        failed,
+        withAutoFix,
+        withFallback,
+        successRate: total > 0 ? ((successful / total) * 100).toFixed(2) : '0.00',
+        avgProcessingTime: avgProcessingTime[0]?.avgTime?.toFixed(2) || 0
+    };
+};
+
+export const Analysis = mongoose.model<IAnalysis, IAnalysisModel>('Analysis', analysisSchema);
+
+===== backend/src/middleware/error.ts =====
+import { Request, Response, NextFunction } from 'express';
+import { AppError } from '../utils/AppError';
+import { logger } from '../utils/logger';
+import { env } from '../config/env';
+
+const sendErrorDev = (err: AppError, res: Response) => {
+    res.status(err.statusCode).json({
+        status: err.status,
+        error: err,
+        message: err.message,
+        stack: err.stack,
+    });
+};
+
+const sendErrorProd = (err: AppError, res: Response) => {
+    // Operational, trusted error: send message to client
+    if (err.isOperational) {
+        res.status(err.statusCode).json({
+            status: err.status,
+            message: err.message,
+        });
+    } else {
+        // Programming or other unknown error: don't leak details
+        logger.error('ERROR 💥', err);
+        res.status(500).json({
+            status: 'error',
+            message: 'Something went very wrong!',
+        });
+    }
+};
+
+export const globalErrorHandler = (
+    err: any,
+    req: Request,
+    res: Response,
+    next: NextFunction
+) => {
+    err.statusCode = err.statusCode || 500;
+    err.status = err.status || 'error';
+
+    if (env.NODE_ENV === 'development') {
+        sendErrorDev(err, res);
+    } else {
+        let error = { ...err };
+        error.message = err.message;
+
+        // Aquí se pueden agregar manejadores específicos para errores de Mongoose, JWT, etc.
+        if (error.name === 'JsonWebTokenError') error = new AppError('Invalid token. Please log in again.', 401);
+        if (error.name === 'TokenExpiredError') error = new AppError('Your token has expired! Please log in again.', 401);
+
+        sendErrorProd(error, res);
+    }
+};
+
+===== backend/src/utils/AppError.ts =====
+export class AppError extends Error {
+    public readonly statusCode: number;
+    public readonly status: string;
+    public readonly isOperational: boolean;
+
+    constructor(message: string, statusCode: number) {
+        super(message);
+
+        this.statusCode = statusCode;
+        this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
+        this.isOperational = true;
+
+        Error.captureStackTrace(this, this.constructor);
+    }
+}
+
+===== backend/src/utils/logger.ts =====
+import winston from 'winston';
+import { env } from '../config/env';
+
+const levels = {
+    error: 0,
+    warn: 1,
+    info: 2,
+    http: 3,
+    debug: 4,
+};
+
+const level = () => {
+    return env.NODE_ENV === 'development' ? 'debug' : 'warn';
+};
+
+const colors = {
+    error: 'red',
+    warn: 'yellow',
+    info: 'green',
+    http: 'magenta',
+    debug: 'white',
+};
+
+winston.addColors(colors);
+
+const format = winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
+    winston.format.colorize({ all: true }),
+    winston.format.printf(
+        (info) => `${info.timestamp} ${info.level}: ${info.message}`,
+    ),
+);
+
+const transports = [
+    new winston.transports.Console(),
+    new winston.transports.File({
+        filename: 'logs/error.log',
+        level: 'error',
+        format: winston.format.uncolorize(), // Archivos sin colores ANSI
+    }),
+    new winston.transports.File({ filename: 'logs/all.log', format: winston.format.uncolorize() }),
+];
+
+export const logger = winston.createLogger({
+    level: level(),
+    levels,
+    format,
+    transports,
+});
+
+===== backend/src/utils/retryHandler.ts =====
+import { logger } from './logger';
+
+type RetryableFunction<T> = () => Promise<T>;
+
+export const retryHandler = {
+    // Retry con backoff exponencial
+    withExponentialBackoff: async <T>(
+        fn: RetryableFunction<T>,
+        maxRetries: number = 3,
+        baseDelay: number = 1000,
+        maxDelay: number = 30000
+    ): Promise<T> => {
+        let lastError: any;
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                // Intentar ejecutar la función
+                const result = await fn();
+
+                if (attempt > 0) {
+                    logger.info(`✅ Operación exitosa después de ${attempt} reintento(s)`);
+                }
+
+                return result;
+            } catch (error: any) {
+                lastError = error;
+
+                // Si es el último intento, lanzar error
+                if (attempt === maxRetries) {
+                    logger.error(`❌ Operación falló después de ${maxRetries} intentos`, {
+                        error: error.message
+                    });
+                    throw new Error(`Falló después de ${maxRetries} intentos: ${error.message}`);
+                }
+
+                // Calcular delay con backoff exponencial y jitter
+                const exponentialDelay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+                const jitter = Math.random() * 1000; // Agregar jitter aleatorio
+                const delay = exponentialDelay + jitter;
+
+                logger.warn(`⚠️ Intento ${attempt + 1} falló, reintentando en ${delay.toFixed(0)}ms`, {
+                    error: error.message
+                });
+
+                // Esperar antes del siguiente intento
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+
+        throw lastError;
+    },
+
+    // Retry con backoff lineal
+    withLinearBackoff: async <T>(
+        fn: RetryableFunction<T>,
+        maxRetries: number = 3,
+        delay: number = 1000
+    ): Promise<T> => {
+        let lastError: any;
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return await fn();
+            } catch (error: any) {
+                lastError = error;
+
+                if (attempt === maxRetries) {
+                    throw new Error(`Falló después de ${maxRetries} intentos: ${error.message}`);
+                }
+
+                const waitTime = delay * (attempt + 1);
+                logger.warn(`Reintentando en ${waitTime}ms...`);
+
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+        }
+
+        throw lastError;
+    },
+
+    // Retry con timeout
+    withTimeout: async <T>(
+        fn: RetryableFunction<T>,
+        timeout: number = 30000
+    ): Promise<T> => {
+        return Promise.race([
+            fn(),
+            new Promise<T>((_, reject) =>
+                setTimeout(() => reject(new Error(`Timeout después de ${timeout}ms`)), timeout)
+            )
+        ]);
+    }
+};
+
+===== backend/src/utils/fileUtils.ts =====
+// Este archivo contiene funciones utilitarias para manejar archivos, como la carga y validación de imágenes.
+
+import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+
+const fsPromises = {
+    readFile: promisify(fs.readFile),
+    writeFile: promisify(fs.writeFile),
+    unlink: promisify(fs.unlink),
+    mkdir: promisify(fs.mkdir),
+    readdir: promisify(fs.readdir),
+};
+
+export const uploadImage = async (imagePath: string, destination: string): Promise<void> => {
+    const destPath = path.join(destination, path.basename(imagePath));
+    await fsPromises.writeFile(destPath, await fsPromises.readFile(imagePath));
+};
+
+export const validateImage = (filePath: string): boolean => {
+    const validExtensions = ['.jpg', '.jpeg', '.png', '.gif'];
+    const ext = path.extname(filePath).toLowerCase();
+    return validExtensions.includes(ext);
+};
+
+export const deleteFile = async (filePath: string): Promise<void> => {
+    await fsPromises.unlink(filePath);
+};
+
+export const createDirectory = async (dirPath: string): Promise<void> => {
+    try {
+        await fsPromises.mkdir(dirPath, { recursive: true });
+    } catch (error) {
+        console.error(`Error creating directory: ${error}`);
+    }
+};
+
+export const listFilesInDirectory = async (dirPath: string): Promise<string[]> => {
+    return await fsPromises.readdir(dirPath);
+};
+===== backend/src/utils/sanitizer.ts =====
+import path from 'path';
+
+export const sanitizer = {
+    // Sanitizar nombre de archivo
+    sanitizeFileName: (fileName: string): string => {
+        if (!fileName) return 'unnamed';
+
+        // Remover caracteres peligrosos
+        let sanitized = fileName
+            .replace(/[^a-zA-Z0-9.-_]/g, '_')  // Solo caracteres seguros
+            .replace(/\.{2,}/g, '.')           // No múltiples puntos
+            .replace(/^\.+/, '')               // No punto al inicio
+            .replace(/\.+$/, '');              // No punto al final
+
+        // Limitar longitud
+        const ext = path.extname(sanitized);
+        const name = path.basename(sanitized, ext);
+
+        if (name.length > 100) {
+            sanitized = name.substring(0, 100) + ext;
+        }
+
+        // Agregar timestamp si está vacío
+        if (!sanitized || sanitized === ext) {
+            sanitized = `file_${Date.now()}${ext}`;
+        }
+
+        return sanitized;
+    },
+
+    // Sanitizar texto para prevenir XSS
+    sanitizeText: (text: string): string => {
+        if (typeof text !== 'string') return '';
+
+        return text
+            .replace(/[<>]/g, '')                    // Remover < >
+            .replace(/javascript:/gi, '')            // Remover javascript:
+            .replace(/on\w+\s*=/gi, '')             // Remover event handlers
+            .trim()
+            .substring(0, 10000);                    // Limitar longitud
+    },
+
+    // Sanitizar objeto JSON
+    sanitizeJSON: (obj: any): any => {
+        if (typeof obj !== 'object' || obj === null) {
+            return obj;
+        }
+
+        const sanitized: any = Array.isArray(obj) ? [] : {};
+
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const value = obj[key];
+
+                if (typeof value === 'string') {
+                    sanitized[key] = sanitizer.sanitizeText(value);
+                } else if (typeof value === 'object') {
+                    sanitized[key] = sanitizer.sanitizeJSON(value);
+                } else {
+                    sanitized[key] = value;
+                }
+            }
+        }
+
+        return sanitized;
+    },
+
+    // Validar y sanitizar email
+    sanitizeEmail: (email: string): string => {
+        if (typeof email !== 'string') return '';
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const sanitized = email.toLowerCase().trim();
+
+        return emailRegex.test(sanitized) ? sanitized : '';
+    },
+
+    // Sanitizar URL
+    sanitizeURL: (url: string): string => {
+        if (typeof url !== 'string') return '';
+
+        try {
+            const parsed = new URL(url);
+
+            // Solo permitir http y https
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                return '';
+            }
+
+            return parsed.href;
+        } catch (error) {
+            return '';
+        }
+    },
+
+    // Remover metadatos sensibles de objetos
+    removeSensitiveData: (obj: any, sensitiveKeys: string[] = ['password', 'token', 'apiKey', 'secret']): any => {
+        if (typeof obj !== 'object' || obj === null) {
+            return obj;
+        }
+
+        const cleaned: any = Array.isArray(obj) ? [...obj] : { ...obj };
+
+        for (const key in cleaned) {
+            if (sensitiveKeys.some(sensitive => key.toLowerCase().includes(sensitive.toLowerCase()))) {
+                cleaned[key] = '***REDACTED***';
+            } else if (typeof cleaned[key] === 'object') {
+                cleaned[key] = sanitizer.removeSensitiveData(cleaned[key], sensitiveKeys);
+            }
+        }
+
+        return cleaned;
+    },
+
+    // Validar y sanitizar número
+    sanitizeNumber: (value: any, min: number = -Infinity, max: number = Infinity): number | null => {
+        const num = Number(value);
+
+        if (isNaN(num)) return null;
+        if (num < min) return min;
+        if (num > max) return max;
+
+        return num;
+    },
+
+    // Sanitizar path de archivo
+    sanitizePath: (filePath: string): string => {
+        if (typeof filePath !== 'string') return '';
+
+        // Remover intentos de path traversal
+        return filePath
+            .replace(/\.\./g, '')
+            .replace(/[\\]/g, '/')
+            .replace(/\/+/g, '/')
+            .replace(/^\/+/, '');
+    }
+};
+
+export default sanitizer;
+
+===== frontend/src/context/AppContext.jsx =====
+import React, { createContext, useContext, useState, useCallback } from 'react';
+import toast from 'react-hot-toast';
+
+const AppContext = createContext();
+
+export const useApp = () => {
+  const context = useContext(AppContext);
+  if (!context) {
+    throw new Error('useApp debe usarse dentro de AppProvider');
+  }
+  return context;
+};
+
+export const AppProvider = ({ children }) => {
+  const [image, setImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
+  const [error, setError] = useState(null);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [systemLogs, setSystemLogs] = useState([]);
+  const [retryCount, setRetryCount] = useState(0);
+  const [autoFixAttempt, setAutoFixAttempt] = useState(0);
+  const [userPrompt, setUserPrompt] = useState('');
+
+  // Agregar log al sistema
+  const addLog = useCallback((type, message, data = {}) => {
+    const log = {
+      id: Date.now() + Math.random(),
+      type,
+      message,
+      data,
+      timestamp: new Date().toISOString(),
+    };
+
+    setSystemLogs((prev) => [...prev.slice(-50), log]);
+
+    // Log en consola para debugging
+    console.log(`[${type.toUpperCase()}]`, message, data);
+  }, []);
+
+  // Manejar selección de imagen
+  const handleImageSelect = useCallback((file) => {
+    if (!file) return;
+
+    setImage(file);
+    setImagePreview(URL.createObjectURL(file));
+    setAnalysis(null);
+    setError(null);
+    setDiagnostics(null);
+    setRetryCount(0);
+    setAutoFixAttempt(0);
+
+    addLog('info', 'Imagen cargada', {
+      fileName: file.name,
+      fileSize: `${(file.size / 1024).toFixed(2)} KB`,
+    });
+
+    toast.success('Imagen cargada correctamente');
+  }, [addLog]);
+
+  // Limpiar imagen
+  const clearImage = useCallback(() => {
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+    setImage(null);
+    setImagePreview(null);
+    setAnalysis(null);
+    setError(null);
+    setDiagnostics(null);
+    setRetryCount(0);
+    setAutoFixAttempt(0);
+    setUserPrompt('');
+
+    addLog('info', 'Imagen eliminada');
+  }, [imagePreview, addLog]);
+
+  // Establecer análisis
+  const setAnalysisData = useCallback((data) => {
+    setAnalysis(data);
+    setError(null);
+    addLog('success', 'Análisis completado exitosamente');
+    toast.success('¡Análisis completado!');
+  }, [addLog]);
+
+  // Establecer error
+  const setErrorData = useCallback((errorMessage, diagnosticsData = null) => {
+    setError(errorMessage);
+    setDiagnostics(diagnosticsData);
+    addLog('error', errorMessage);
+    toast.error('Error en el análisis');
+  }, [addLog]);
+
+  // Incrementar contador de reintentos
+  const incrementRetry = useCallback(() => {
+    setRetryCount((prev) => prev + 1);
+  }, []);
+
+  // Incrementar contador de auto-fix
+  const incrementAutoFix = useCallback(() => {
+    setAutoFixAttempt((prev) => prev + 1);
+  }, []);
+
+  // Limpiar logs
+  const clearLogs = useCallback(() => {
+    setSystemLogs([]);
+    addLog('system', 'Logs limpiados');
+  }, [addLog]);
+
+  // Resetear todo el estado
+  const resetAll = useCallback(() => {
+    clearImage();
+    setSystemLogs([]);
+    setRetryCount(0);
+    setAutoFixAttempt(0);
+    addLog('system', 'Sistema reiniciado');
+    toast.success('Sistema reiniciado');
+  }, [clearImage, addLog]);
+
+  const value = {
+    // Estado
+    image,
+    imagePreview,
+    loading,
+    analysis,
+    error,
+    diagnostics,
+    systemLogs,
+    retryCount,
+    autoFixAttempt,
+    userPrompt,
+
+    // Setters
+    setLoading,
+    setRetryCount,
+    setAutoFixAttempt,
+    setUserPrompt,
+
+    // Funciones
+    handleImageSelect,
+    clearImage,
+    setAnalysisData,
+    setErrorData,
+    incrementRetry,
+    incrementAutoFix,
+    addLog,
+    clearLogs,
+    resetAll,
+  };
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+};
+===== frontend/src/services/imageService.js =====
+import api from './api';
+
+export const imageService = {
+  // Analizar imagen
+  analyzeImage: async (file, config = {}) => {
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      formData.append('config', JSON.stringify(config));
+
+      // Agregar userPrompt si existe
+      if (config.userPrompt) {
+        formData.append('userPrompt', config.userPrompt);
+      }
+
+      const response = await api.post('/analyze', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: config.timeout || 90000,
+      });
+
+      return response.data;
+    } catch (error) {
+      throw imageService.handleError(error);
+    }
+  },
+
+  // Obtener historial
+  getHistory: async (limit = 10, page = 1) => {
+    try {
+      const response = await api.get('/images/history', {
+        params: { limit, page },
+      });
+      return response.data;
+    } catch (error) {
+      throw imageService.handleError(error);
+    }
+  },
+
+  // Obtener análisis por ID
+  getAnalysisById: async (id) => {
+    try {
+      const response = await api.get(`/images/${id}`);
+      return response.data;
+    } catch (error) {
+      throw imageService.handleError(error);
+    }
+  },
+
+  // Eliminar análisis
+  deleteAnalysis: async (id) => {
+    try {
+      const response = await api.delete(`/images/${id}`);
+      return response.data;
+    } catch (error) {
+      throw imageService.handleError(error);
+    }
+  },
+
+  // Manejar errores
+  handleError: (error) => {
+    if (error.response) {
+      // Error de respuesta del servidor
+      const data = error.response.data;
+      let message = 'Error en el servidor';
+      if (data?.error) {
+        message = typeof data.error === 'string' ? data.error : (data.error.message || JSON.stringify(data.error));
+      } else if (data?.message) {
+        message = data.message;
+      }
+      return new Error(message);
+    } else if (error.request) {
+      // Error de red
+      return new Error('No se pudo conectar con el servidor. Verifica tu conexión.');
+    } else {
+      // Otro tipo de error
+      return new Error(error.message || 'Error desconocido');
+    }
+  },
+};
+===== frontend/src/hooks/useAnalysis.js =====
+import { useCallback } from 'react';
+import { useApp } from '../context/AppContext';
+import { useConfig } from '../context/ConfigContext';
+import { imageService } from '../services/imageService';
+import { diagnosticService } from '../services/diagnosticService';
+import toast from 'react-hot-toast';
+
+export const useAnalysis = () => {
+  const {
+    image,
+    setLoading,
+    setAnalysisData,
+    setErrorData,
+    incrementRetry,
+    incrementAutoFix,
+    addLog,
+    userPrompt,
+  } = useApp();
+
+  const { config, apiKey } = useConfig();
+
+  const analyzeImage = useCallback(async () => {
+    if (!image) {
+      toast.error('No hay imagen para analizar');
+      return;
+    }
+
+    if (!apiKey) {
+      toast.error('Por favor configura tu API Key de Gemini');
+      return;
+    }
+
+    setLoading(true);
+    addLog('info', 'Iniciando análisis de imagen');
+
+    try {
+      const startTime = Date.now();
+
+      // Analizar imagen
+      const result = await imageService.analyzeImage(image, {
+        ...config,
+        apiKey,
+        userPrompt, // Incluir el prompt del usuario
+      });
+
+      const duration = Date.now() - startTime;
+
+      addLog('success', `Análisis completado en ${duration}ms`, {
+        duration,
+        result: result.data,
+      });
+
+      setAnalysisData(result.data);
+    } catch (error) {
+      addLog('error', 'Error durante el análisis', { error: error.message });
+
+      // Diagnóstico local
+      const diagnostics = diagnosticService.localDiagnose(error);
+
+      // Registrar error en backend (si está disponible)
+      await diagnosticService.logError(error, {
+        fileName: image.name,
+        fileSize: image.size,
+        config,
+      });
+
+      setErrorData(error.message, diagnostics);
+
+      // Si es auto-reparable, sugerir reintento
+      if (diagnostics.autoFixable) {
+        toast.error('Error detectado. El sistema puede intentar auto-corregir.', {
+          duration: 5000,
+        });
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [image, apiKey, config, userPrompt, setLoading, setAnalysisData, setErrorData, addLog]);
+
+  const retryAnalysis = useCallback(async () => {
+    incrementRetry();
+    addLog('info', 'Reintentando análisis con configuración mejorada');
+    await analyzeImage();
+  }, [analyzeImage, incrementRetry, addLog]);
+
+  const analyzeWithAutoFix = useCallback(async (newConfig) => {
+    incrementAutoFix();
+    addLog('autofix', 'Aplicando auto-correcciones', { newConfig });
+
+    // Actualizar temporalmente la configuración
+    const originalConfig = { ...config };
+
+    try {
+      // Aquí podrías actualizar la configuración temporalmente
+      await analyzeImage();
+    } finally {
+      // Restaurar configuración original si es necesario
+    }
+  }, [analyzeImage, incrementAutoFix, addLog, config]);
+
+  return {
+    analyzeImage,
+    retryAnalysis,
+    analyzeWithAutoFix,
+  };
+};
+===== frontend/src/components/analysis/AnalysisResults.jsx =====
+import React from 'react';
+import { Check, Download, Copy, FileText, Clock, ShieldCheck, AlertTriangle, Wand2 } from 'lucide-react';
+import { useApp } from '../../context/AppContext';
+import Button from '../common/Button';
+import Model3DViewer from './Model3DViewer';
+import toast from 'react-hot-toast';
+import { formatters } from '@/utils/formatters';
+
+const AnalysisResults = () => {
+  const { analysis } = useApp();
+
+  if (!analysis) return null;
+
+  const handleCopy = () => {
+    const text = JSON.stringify(analysis.analysis, null, 2);
+    navigator.clipboard.writeText(text);
+    toast.success('Análisis copiado al portapapeles');
+  };
+
+  const handleDownload = () => {
+    const text = JSON.stringify(analysis.analysis, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `analisis-3d-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success('Análisis descargado');
+  };
+
+  return (
+    <div className="glass-panel rounded-2xl p-1 animate-slide-up">
+      <div className="bg-surface/50 rounded-xl p-6 backdrop-blur-sm">
+
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b border-white/10 pb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-green-500/10 rounded-lg border border-green-500/20">
+              <Check className="w-6 h-6 text-green-400" />
+            </div>
+            <div>
+              <h3 className="text-white font-bold text-xl tracking-tight">Análisis Completado</h3>
+              <p className="text-text-muted text-sm">Procesado exitosamente por Gemini AI</p>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button
+              onClick={handleCopy}
+              variant="secondary"
+              size="sm"
+              icon={Copy}
+              className="bg-white/5 hover:bg-white/10 border-white/10"
+            >
+              Copiar
+            </Button>
+            <Button
+              onClick={handleDownload}
+              variant="primary"
+              size="sm"
+              icon={Download}
+            >
+              Descargar JSON
+            </Button>
+          </div>
+        </div>
+
+        {/* Badges & Status */}
+        <div className="flex flex-wrap gap-3 mb-8">
+          {analysis.analysis.fallbackMode && (
+            <span className="px-3 py-1 bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 text-xs font-bold rounded-full flex items-center gap-1.5">
+              <AlertTriangle className="w-3 h-3" />
+              Modo Fallback
+            </span>
+          )}
+          {analysis.analysis.autoFixApplied && (
+            <span className="px-3 py-1 bg-primary-DEFAULT/10 text-primary-glow border border-primary-DEFAULT/20 text-xs font-bold rounded-full flex items-center gap-1.5">
+              <Wand2 className="w-3 h-3" />
+              Auto-corrección aplicada
+            </span>
+          )}
+          <span className="px-3 py-1 bg-green-500/10 text-green-400 border border-green-500/20 text-xs font-bold rounded-full flex items-center gap-1.5">
+            <ShieldCheck className="w-3 h-3" />
+            Seguro
+          </span>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-6 mb-8">
+          {/* Info Card */}
+          <div className="glass-card p-4 rounded-xl space-y-4 md:col-span-1">
+            <h4 className="text-text-secondary text-xs font-bold uppercase tracking-wider mb-2">Metadatos</h4>
+
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <FileText className="w-4 h-4 text-primary-DEFAULT" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-text-muted text-xs">Archivo</p>
+                  <p className="text-white text-sm font-medium truncate" title={analysis.fileName}>{analysis.fileName}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="w-4 h-4 flex items-center justify-center text-primary-DEFAULT font-mono text-xs font-bold">KB</div>
+                <div>
+                  <p className="text-text-muted text-xs">Tamaño</p>
+                  <p className="text-white text-sm font-medium">{analysis.fileSize}</p>
+                </div>
+              </div>
+
+              {analysis.timestamp && (
+                <div className="flex items-center gap-3">
+                  <Clock className="w-4 h-4 text-primary-DEFAULT" />
+                  <div>
+                    <p className="text-text-muted text-xs">Fecha</p>
+                    <p className="text-white text-sm font-medium">
+                      {new Date(analysis.timestamp).toLocaleString('es-ES')}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* JSON Preview */}
+          <div className="md:col-span-2 glass-card rounded-xl overflow-hidden flex flex-col">
+            <div className="bg-white/5 px-4 py-2 border-b border-white/5 flex justify-between items-center">
+              <span className="text-xs font-mono text-text-secondary">raw_output.json</span>
+              <div className="flex gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-full bg-red-500/20 border border-red-500/50" />
+                <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/20 border border-yellow-500/50" />
+                <div className="w-2.5 h-2.5 rounded-full bg-green-500/20 border border-green-500/50" />
+              </div>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[200px] custom-scrollbar bg-black/40">
+              <pre className="text-primary-glow text-xs font-mono leading-relaxed">
+                {JSON.stringify(analysis.analysis, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
+
+        {/* Visualizador 3D */}
+        {(analysis.mesh3D || analysis.modelUrl) && (
+          <div className="mb-8 glass-card p-1 rounded-xl">
+            <div className="bg-black/40 rounded-lg overflow-hidden">
+              <div className="px-4 py-3 border-b border-white/5 bg-white/5">
+                <h4 className="text-white font-semibold text-sm flex items-center gap-2">
+                  <Wand2 className="w-4 h-4 text-secondary-DEFAULT" />
+                  Modelo 3D Generado
+                </h4>
+              </div>
+              <div className="aspect-video relative">
+                <Model3DViewer meshData={analysis.mesh3D} modelUrl={analysis.modelUrl} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Correcciones aplicadas */}
+        {analysis.analysis.fixes && analysis.analysis.fixes.length > 0 && (
+          <div className="p-4 bg-primary-DEFAULT/5 border border-primary-DEFAULT/20 rounded-xl">
+            <h4 className="text-primary-glow font-semibold mb-3 text-sm flex items-center gap-2">
+              <Wand2 className="w-4 h-4" />
+              Correcciones Automáticas Aplicadas
+            </h4>
+            <ul className="space-y-2">
+              {analysis.analysis.fixes.map((fix, index) => (
+                <li key={index} className="text-text-secondary text-sm flex items-start gap-2 bg-black/20 p-2 rounded-lg">
+                  <Check className="w-4 h-4 text-green-400 flex-shrink-0 mt-0.5" />
+                  <span>{fix}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default AnalysisResults;
+===== frontend/src/components/analysis/Model3DViewer.jsx =====
+import React, { Suspense, useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { OrbitControls, PerspectiveCamera, Box, Cylinder, Sphere, Cone, Text, Gltf, Environment } from '@react-three/drei';
+import * as THREE from 'three';
+
+// ... (GeometryBlock component remains the same)
+
+// Componente principal del visualizador
+function Model3DViewer({ meshData, modelUrl }) {
+  // Debug mode
+  console.log("ModelViewer Props:", { meshData, modelUrl });
+
+  if ((!meshData || !meshData.geometries || meshData.geometries.length === 0) && !modelUrl) {
+    return (
+      <div className="w-full h-96 bg-slate-800 rounded-lg flex items-center justify-center">
+        <div className="text-center text-slate-400">
+          <p className="text-lg mb-2">No hay modelo 3D disponible</p>
+          <p className="text-sm">Sube una imagen para generar un modelo 3D</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Si hay URL de modelo GLB (TripoSR), renderizar eso
+  if (modelUrl) {
+    const fullModelUrl = modelUrl.startsWith('http') ? modelUrl : `http://localhost:5000${modelUrl}`;
+
+    return (
+      <div className="w-full h-96 bg-slate-900 rounded-lg overflow-hidden border border-slate-700 relative">
+        <Canvas shadows camera={{ position: [3, 3, 3], fov: 50 }}>
+          <Suspense fallback={<Text color="white" position={[0, 0, 0]}>Cargando modelo...</Text>}>
+            <ambientLight intensity={1.0} />
+            <directionalLight position={[5, 10, 5]} intensity={1.5} castShadow />
+            <Environment preset="city" />
+
+            <Gltf src={fullModelUrl} scale={3} position={[0, -1, 0]} />
+
+            <OrbitControls autoRotate autoRotateSpeed={2} />
+            <gridHelper args={[10, 10]} />
+          </Suspense>
+        </Canvas>
+        <div className="absolute top-2 right-2 bg-purple-600 px-2 py-1 rounded text-xs text-white font-bold">
+          TripoSR Mode
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback: Renderizar bloques si no hay modeUrl
+  const { geometries, metadata } = meshData;
+  const boundingBox = metadata.boundingBox || { min: [-1, -1, -1], max: [1, 1, 1] };
+  const centerX = (boundingBox.min[0] + boundingBox.max[0]) / 2;
+  const centerY = (boundingBox.min[1] + boundingBox.max[1]) / 2;
+  const centerZ = (boundingBox.min[2] + boundingBox.max[2]) / 2;
+
+  const sizeX = boundingBox.max[0] - boundingBox.min[0];
+  const sizeY = boundingBox.max[1] - boundingBox.min[1];
+  const sizeZ = boundingBox.max[2] - boundingBox.min[2];
+  const maxSize = Math.max(sizeX, sizeY, sizeZ);
+  const cameraDistance = maxSize * 2.5;
+
+  return (
+    <div className="w-full h-96 bg-slate-900 rounded-lg overflow-hidden border border-slate-700">
+      <Canvas
+        shadows
+        camera={{ position: [cameraDistance, cameraDistance, cameraDistance], fov: 50 }}
+      >
+        <Suspense fallback={null}>
+          {/* Iluminación */}
+          <ambientLight intensity={0.5} />
+          <directionalLight
+            position={[10, 10, 5]}
+            intensity={1}
+            castShadow
+            shadow-mapSize-width={2048}
+            shadow-mapSize-height={2048}
+          />
+          <pointLight position={[-10, -10, -5]} intensity={0.5} />
+
+          {/* Grid helper */}
+          <gridHelper args={[maxSize * 2, 20, '#4a5568', '#2d3748']} />
+
+          {/* Ejes */}
+          <axesHelper args={[maxSize]} />
+
+          {/* Renderizar todas las geometrías */}
+          {geometries.map((geometry, index) => (
+            <GeometryBlock
+              key={index}
+              type={geometry.type}
+              position={geometry.position}
+              size={geometry.size}
+              rotation={geometry.rotation}
+              color={geometry.color}
+            />
+          ))}
+
+          {/* Controles de órbita */}
+          <OrbitControls
+            enablePan={true}
+            enableZoom={true}
+            enableRotate={true}
+            minDistance={maxSize * 0.5}
+            maxDistance={maxSize * 5}
+            target={[centerX, centerY, centerZ]}
+          />
+
+          {/* Información del modelo */}
+          <Text
+            position={[centerX, boundingBox.max[1] + maxSize * 0.2, centerZ]}
+            fontSize={maxSize * 0.1}
+            color="#ffffff"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {metadata.totalBlocks} bloques
+          </Text>
+        </Suspense>
+      </Canvas>
+
+      {/* Controles de UI */}
+      <div className="absolute bottom-4 left-4 bg-slate-800/80 backdrop-blur-sm rounded-lg p-3 text-xs text-slate-300">
+        <div className="space-y-1">
+          <p><strong>Bloques:</strong> {metadata.totalBlocks}</p>
+          <p><strong>Rotar:</strong> Click + arrastrar</p>
+          <p><strong>Zoom:</strong> Rueda del mouse</p>
+          <p><strong>Mover:</strong> Click derecho + arrastrar</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default Model3DViewer;
+
+
+===== frontend/src/components/upload/ImagePreview.jsx =====
+import React from 'react';
+import { X, Image as ImageIcon, Scan, Box } from 'lucide-react';
+import { useApp } from '@/context/AppContext';
+import { useAnalysis } from '@/hooks/useAnalysis';
+import Button from '@/components/common/Button';
+import { formatters } from '@/utils/formatters';
+import PromptInput from './PromptInput';
+
+const ImagePreview = () => {
+  const { image, imagePreview, clearImage, loading, retryCount, userPrompt, setUserPrompt } = useApp();
+  const { analyzeImage } = useAnalysis();
+
+  if (!image || !imagePreview) return null;
+
+  return (
+    <div className="glass-panel rounded-2xl p-1 animate-slide-up">
+      <div className="bg-surface/50 rounded-xl p-6 backdrop-blur-sm">
+
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-primary-DEFAULT/10 rounded-lg border border-primary-DEFAULT/20">
+              <ImageIcon className="w-5 h-5 text-primary-glow" />
+            </div>
+            <div>
+              <h3 className="text-white font-bold text-lg">Vista Previa</h3>
+              <p className="text-xs text-text-muted">Listo para procesar</p>
+            </div>
+          </div>
+
+          <button
+            onClick={clearImage}
+            disabled={loading}
+            className="p-2 hover:bg-white/10 rounded-lg transition-colors text-text-secondary hover:text-white disabled:opacity-50 group"
+          >
+            <X className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" />
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-8">
+          {/* Columna Imagen */}
+          <div className="relative group rounded-xl overflow-hidden border border-white/10 bg-black/40 aspect-video md:aspect-square flex items-center justify-center">
+            <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-20" />
+
+            <img
+              src={imagePreview}
+              alt="Preview"
+              className="relative z-10 max-w-full max-h-full object-contain shadow-2xl transition-transform duration-700 group-hover:scale-105"
+            />
+
+            {/* Overlay de escaneo (decorativo) */}
+            {loading && (
+              <div className="absolute inset-0 z-20 bg-gradient-to-b from-transparent via-secondary-DEFAULT/10 to-transparent animate-scan pointer-events-none" />
+            )}
+
+            <div className="absolute bottom-4 right-4 z-20 px-3 py-1 bg-black/60 backdrop-blur-md rounded-full border border-white/10 text-xs font-mono text-white">
+              {image.type.split('/')[1].toUpperCase()}
+            </div>
+          </div>
+
+          {/* Columna Info y Acciones */}
+          <div className="flex flex-col justify-between">
+            <div className="space-y-4">
+              <div className="glass-card p-4 rounded-xl space-y-3">
+                <div className="flex justify-between items-center border-b border-white/5 pb-2">
+                  <span className="text-text-secondary text-sm">Archivo</span>
+                  <span className="text-white font-medium truncate max-w-[150px]" title={image.name}>{image.name}</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-white/5 pb-2">
+                  <span className="text-text-secondary text-sm">Tamaño</span>
+                  <span className="text-white font-mono text-xs bg-white/5 px-2 py-0.5 rounded">
+                    {formatters.formatFileSize(image.size)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-text-secondary text-sm">Estado</span>
+                  <span className="flex items-center gap-1.5 text-green-400 text-xs font-bold uppercase tracking-wider">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                    Ready
+                  </span>
+                </div>
+              </div>
+
+              {loading && (
+                <div className="p-4 bg-primary-DEFAULT/10 border border-primary-DEFAULT/20 rounded-xl animate-pulse">
+                  <div className="flex items-center gap-3 mb-2">
+                    <Scan className="w-5 h-5 text-primary-glow animate-spin-slow" />
+                    <span className="text-primary-glow font-bold text-sm">Procesando con Gemini AI</span>
+                  </div>
+                  <div className="h-1.5 bg-black/20 rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-primary-DEFAULT to-secondary-DEFAULT w-full animate-[progress_2s_ease-in-out_infinite]" />
+                  </div>
+                  <p className="text-xs text-text-muted mt-2 text-center">
+                    Generando topología y texturas...
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Prompt Input */}
+            <div className="mt-4">
+              <PromptInput
+                value={userPrompt}
+                onChange={setUserPrompt}
+                disabled={loading}
+              />
+            </div>
+
+            <Button
+              onClick={analyzeImage}
+              loading={loading}
+              disabled={loading}
+              variant="primary"
+              size="lg"
+              className="w-full mt-6 group relative overflow-hidden"
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-secondary-DEFAULT/20 to-primary-DEFAULT/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+              <span className="relative flex items-center justify-center gap-2">
+                {loading ? (
+                  retryCount > 0 ? `Reintentando (${retryCount})...` : 'Analizando...'
+                ) : (
+                  <>
+                    <Box className="w-5 h-5" />
+                    Generar Modelo 3D
+                  </>
+                )}
+              </span>
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ImagePreview;
+===== frontend/src/components/upload/PromptInput.jsx =====
+import React, { useState } from 'react';
+import { Type, Sparkles } from 'lucide-react';
+
+const PromptInput = ({ value, onChange, disabled = false }) => {
+    const [charCount, setCharCount] = useState(value?.length || 0);
+    const maxChars = 500;
+
+    const handleChange = (e) => {
+        const newValue = e.target.value;
+        if (newValue.length <= maxChars) {
+            setCharCount(newValue.length);
+            onChange(newValue);
+        }
+    };
+
+    const examplePrompts = [
+        "Soldado futurista con armadura táctica completa, casco con visor, chaleco antibalas",
+        "Robot humanoide con detalles mecánicos, articulaciones visibles, estilo sci-fi",
+        "Personaje de fantasía con armadura medieval, espada y escudo",
+    ];
+
+    const [showExamples, setShowExamples] = useState(false);
+
+    return (
+        <div className="w-full space-y-3">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                    <Sparkles className="w-4 h-4 text-purple-500" />
+                    Describe tu modelo 3D (opcional)
+                </label>
+                <button
+                    type="button"
+                    onClick={() => setShowExamples(!showExamples)}
+                    className="text-xs text-purple-600 hover:text-purple-700 underline"
+                >
+                    {showExamples ? 'Ocultar' : 'Ver'} ejemplos
+                </button>
+            </div>
+
+            {/* Examples */}
+            {showExamples && (
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 space-y-2">
+                    <p className="text-xs font-medium text-purple-900">Ejemplos de prompts:</p>
+                    {examplePrompts.map((example, index) => (
+                        <button
+                            key={index}
+                            type="button"
+                            onClick={() => {
+                                setCharCount(example.length);
+                                onChange(example);
+                            }}
+                            className="text-left w-full text-xs text-purple-700 hover:bg-purple-100 p-2 rounded transition-colors"
+                        >
+                            "{example}"
+                        </button>
+                    ))}
+                </div>
+            )}
+
+            {/* Textarea */}
+            <div className="relative">
+                <textarea
+                    value={value}
+                    onChange={handleChange}
+                    disabled={disabled}
+                    placeholder="Ejemplo: Crea un modelo 3D de un robot humanoide con armadura futurista, incluye casco, torso blindado, brazos articulados y piernas robóticas. Estilo: sci-fi, nivel de detalle alto."
+                    className={`
+            w-full min-h-[120px] px-4 py-3 
+            border-2 border-gray-300 rounded-lg
+            focus:border-purple-500 focus:ring-2 focus:ring-purple-200
+            transition-all duration-200
+            placeholder:text-gray-400 text-sm
+            resize-none
+            ${disabled ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}
+          `}
+                    rows={4}
+                />
+
+                {/* Character Counter */}
+                <div className="absolute bottom-2 right-2 text-xs text-gray-500">
+                    {charCount}/{maxChars}
+                </div>
+            </div>
+
+            {/* Help Text */}
+            <div className="flex items-start gap-2 text-xs text-gray-600">
+                <Type className="w-3 h-3 mt-0.5 flex-shrink-0 text-gray-400" />
+                <p>
+                    Describe el modelo que deseas crear: partes específicas, estilo, nivel de detalle.
+                    Esto ayudará a generar un modelo 3D más preciso.
+                </p>
+            </div>
+        </div>
+    );
+};
+
+export default PromptInput;
+

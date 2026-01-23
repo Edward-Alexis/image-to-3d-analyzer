@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  # MongoDB
+  mongodb:
+    image: mongo:6
+    container_name: image-to-3d-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: image-to-3d
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - app-network
+
+  # Backend
+  backend:
+    build: ./backend
+    container_name: image-to-3d-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/image-to-3d?authSource=admin
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      CORS_ORIGIN: http://localhost:3000
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongodb
+    volumes:
+      - ./backend/logs:/app/logs
+      - ./backend/uploads:/app/uploads
+    networks:
+      - app-network
+
+  # Frontend
+  frontend:
+    build: ./frontend
+    container_name: image-to-3d-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:5000/api
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  app-network:
+    driver: bridge

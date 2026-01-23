@@ -1,0 +1,1 @@
+// Este archivo define tipos personalizados utilizados en la aplicación.
