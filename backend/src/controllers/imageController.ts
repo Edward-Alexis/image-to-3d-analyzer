@@ -8,6 +8,9 @@ import { logger } from '../utils/logger';
 import { generateMeshFromImage, processImageForMesh, generateJSON } from '../services/meshGenerator';
 import { generateProductionMesh } from '../services/productionMeshGenerator';
 import { tripoService } from '../services/tripoService';
+import { generateLowPolyProAsset } from '../services/lowPolyProPipeline';
+import path from 'path';
+import fs from 'fs';
 
 // Import removed, used static import instead
 
@@ -157,6 +160,33 @@ export const imageController = {
                 }
             }
 
+            // Generar Low Poly Pro si está habilitado
+            const useLowPolyPro =
+                req.body.lowPolyPro === 'true' ||
+                req.body.lowPolyPro === true ||
+                adaptiveConfig.lowPolyPro === true;
+
+            let lowPolyPro = null;
+            let lowPolyProModelUrl: string | null = null;
+
+            if (useLowPolyPro) {
+                lowPolyPro = generateLowPolyProAsset(meshData.geometries, {
+                    presetId: adaptiveConfig.lowPolyPreset,
+                    paletteId: adaptiveConfig.lowPolyPalette,
+                    polyBudget: adaptiveConfig.lowPolyBudget
+                });
+
+                const modelsDir = path.join(__dirname, '../../public/models');
+                if (!fs.existsSync(modelsDir)) {
+                    fs.mkdirSync(modelsDir, { recursive: true });
+                }
+
+                const fileName = `lowpoly_${Date.now()}.gltf`;
+                const outputPath = path.join(modelsDir, fileName);
+                fs.writeFileSync(outputPath, lowPolyPro.gltf);
+                lowPolyProModelUrl = `/models/${fileName}`;
+            }
+
             // Generar modelo de producción si está habilitado
             let productionMesh = null;
             const useProduction = req.body.productionMode || process.env.USE_PRODUCTION_MESH === 'true';
@@ -239,6 +269,14 @@ export const imageController = {
             if (productionMesh) {
                 responseData.productionMesh = productionMesh;
                 responseData.productionReady = true;
+            }
+
+            if (lowPolyPro) {
+                responseData.lowPolyPro = {
+                    ...lowPolyPro,
+                    modelUrl: lowPolyProModelUrl
+                };
+                responseData.lowPolyReady = lowPolyPro.validation.passed;
             }
 
             res.json({

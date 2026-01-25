@@ -9,7 +9,8 @@
     "dev": "nodemon --exec ts-node src/server.ts",
     "test": "jest --coverage",
     "lint": "eslint src/**/*.ts",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "validate:lowpoly": "ts-node scripts/validateLowPolyGltf.ts"
   },
   "keywords": [
     "3d",
