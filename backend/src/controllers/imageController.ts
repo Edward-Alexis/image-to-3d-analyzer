@@ -8,6 +8,10 @@ import { logger } from '../utils/logger';
 import { generateMeshFromImage, processImageForMesh, generateJSON } from '../services/meshGenerator';
 import { generateProductionMesh } from '../services/productionMeshGenerator';
 import { tripoService } from '../services/tripoService';
+import { createIndieHumanoidTemplate, createRobloxHumanoidTemplate, generateLowPolyProAsset } from '../services/lowPolyProPipeline';
+import path from 'path';
+import fs from 'fs';
+import { classifyPrompt } from '../utils/categoryClassifier';
 
 // Import removed, used static import instead
 
@@ -157,6 +161,63 @@ export const imageController = {
                 }
             }
 
+            // Generar Low Poly Pro si está habilitado
+            const useLowPolyPro =
+                req.body.lowPolyPro === 'true' ||
+                req.body.lowPolyPro === true ||
+                adaptiveConfig.lowPolyPro === true;
+
+            let lowPolyPro = null;
+            let lowPolyProModelUrl: string | null = null;
+            let detectedCategory = 'unknown';
+            let classificationScore = 0;
+            let classificationSource: string = 'unknown';
+
+            if (useLowPolyPro) {
+                const lowPolyStyle = req.body.lowPolyStyle || adaptiveConfig.lowPolyStyle;
+                const hasExplicitStyle = Boolean(lowPolyStyle);
+
+                if (hasExplicitStyle) {
+                    detectedCategory = lowPolyStyle === 'roblox' || lowPolyStyle === 'humanoid' || lowPolyStyle === 'humanoid-indie'
+                        ? 'humanoid'
+                        : 'unknown';
+                    classificationSource = 'override';
+                } else {
+                    const classification = await classifyPrompt(userPrompt || '');
+                    detectedCategory = classification.category;
+                    classificationScore = classification.score;
+                    classificationSource = classification.source;
+                }
+
+                const effectiveStyle = hasExplicitStyle
+                    ? lowPolyStyle
+                    : detectedCategory === 'humanoid'
+                        ? 'roblox'
+                        : undefined;
+
+                const baseGeometries = effectiveStyle === 'humanoid' || effectiveStyle === 'humanoid-indie'
+                    ? createIndieHumanoidTemplate()
+                    : effectiveStyle === 'roblox'
+                        ? createRobloxHumanoidTemplate()
+                        : meshData.geometries;
+
+                lowPolyPro = generateLowPolyProAsset(baseGeometries, {
+                    presetId: adaptiveConfig.lowPolyPreset,
+                    paletteId: adaptiveConfig.lowPolyPalette,
+                    polyBudget: adaptiveConfig.lowPolyBudget
+                });
+
+                const modelsDir = path.join(__dirname, '../../public/models');
+                if (!fs.existsSync(modelsDir)) {
+                    fs.mkdirSync(modelsDir, { recursive: true });
+                }
+
+                const fileName = `lowpoly_${Date.now()}.gltf`;
+                const outputPath = path.join(modelsDir, fileName);
+                fs.writeFileSync(outputPath, lowPolyPro.gltf);
+                lowPolyProModelUrl = `/models/${fileName}`;
+            }
+
             // Generar modelo de producción si está habilitado
             let productionMesh = null;
             const useProduction = req.body.productionMode || process.env.USE_PRODUCTION_MESH === 'true';
@@ -239,6 +300,17 @@ export const imageController = {
             if (productionMesh) {
                 responseData.productionMesh = productionMesh;
                 responseData.productionReady = true;
+            }
+
+            if (lowPolyPro) {
+                responseData.lowPolyPro = {
+                    ...lowPolyPro,
+                    modelUrl: lowPolyProModelUrl
+                };
+                responseData.lowPolyReady = lowPolyPro.validation.passed;
+                responseData.detectedCategory = detectedCategory;
+                responseData.classificationScore = classificationScore;
+                responseData.classificationSource = classificationSource;
             }
 
             res.json({

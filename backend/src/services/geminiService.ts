@@ -197,4 +197,57 @@ MÁXIMA PRIORIDAD: muchas partes.`;
 
         return await retryHandler.withExponentialBackoff(analyzeFunction, maxRetries);
     }
+    ,
+    classifyCategory: async (prompt: string) => {
+        try {
+            const controller = new AbortController();
+            const timeout = geminiConfig.timeout || 60000;
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+            const classificationPrompt = `Clasifica el texto en una sola categoría: humanoid, animal, vehicle, prop, building, unknown.
+Responde SOLO con JSON válido:
+{"category":"humanoid|animal|vehicle|prop|building|unknown"}
+Texto: "${prompt}"`;
+
+            const response = await axios.post(
+                `${geminiConfig.baseUrl}/${geminiConfig.model}:generateContent?key=${geminiConfig.apiKey}`,
+                {
+                    contents: [{ parts: [{ text: classificationPrompt }] }],
+                    generationConfig: {
+                        ...geminiConfig.defaultParams,
+                        temperature: 0.2,
+                        maxOutputTokens: 256
+                    },
+                    safetySettings: geminiConfig.safetySettings
+                },
+                {
+                    signal: controller.signal,
+                    timeout,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            clearTimeout(timeoutId);
+
+            const textContent = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            let cleanedText = textContent;
+            const codeBlockMatch = textContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (codeBlockMatch) {
+                cleanedText = codeBlockMatch[1].trim();
+            }
+
+            const parsed = JSON.parse(cleanedText);
+            const category = String(parsed.category || '').toLowerCase();
+            if (['humanoid', 'animal', 'vehicle', 'prop', 'building', 'unknown'].includes(category)) {
+                return category as any;
+            }
+
+            return 'unknown';
+        } catch (error) {
+            logger.warn('Fallo clasificación Gemini, usando unknown');
+            return 'unknown';
+        }
+    }
 };

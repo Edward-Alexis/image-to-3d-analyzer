@@ -67,12 +67,12 @@ const PromptInput = ({ value, onChange, disabled = false }) => {
                     placeholder="Ejemplo: Crea un modelo 3D de un robot humanoide con armadura futurista, incluye casco, torso blindado, brazos articulados y piernas robóticas. Estilo: sci-fi, nivel de detalle alto."
                     className={`
             w-full min-h-[120px] px-4 py-3 
-            border-2 border-gray-300 rounded-lg
+            border-2 border-slate-600 rounded-lg
             focus:border-purple-500 focus:ring-2 focus:ring-purple-200
             transition-all duration-200
-            placeholder:text-gray-400 text-sm
+            placeholder:text-slate-400 text-sm text-white
             resize-none
-            ${disabled ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'}
+            ${disabled ? 'bg-slate-800/60 cursor-not-allowed' : 'bg-slate-900'}
           `}
                     rows={4}
                 />
