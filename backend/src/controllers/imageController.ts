@@ -8,9 +8,10 @@ import { logger } from '../utils/logger';
 import { generateMeshFromImage, processImageForMesh, generateJSON } from '../services/meshGenerator';
 import { generateProductionMesh } from '../services/productionMeshGenerator';
 import { tripoService } from '../services/tripoService';
-import { generateLowPolyProAsset } from '../services/lowPolyProPipeline';
+import { createIndieHumanoidTemplate, createRobloxHumanoidTemplate, generateLowPolyProAsset } from '../services/lowPolyProPipeline';
 import path from 'path';
 import fs from 'fs';
+import { classifyPrompt } from '../utils/categoryClassifier';
 
 // Import removed, used static import instead
 
@@ -168,9 +169,39 @@ export const imageController = {
 
             let lowPolyPro = null;
             let lowPolyProModelUrl: string | null = null;
+            let detectedCategory = 'unknown';
+            let classificationScore = 0;
+            let classificationSource: string = 'unknown';
 
             if (useLowPolyPro) {
-                lowPolyPro = generateLowPolyProAsset(meshData.geometries, {
+                const lowPolyStyle = req.body.lowPolyStyle || adaptiveConfig.lowPolyStyle;
+                const hasExplicitStyle = Boolean(lowPolyStyle);
+
+                if (hasExplicitStyle) {
+                    detectedCategory = lowPolyStyle === 'roblox' || lowPolyStyle === 'humanoid' || lowPolyStyle === 'humanoid-indie'
+                        ? 'humanoid'
+                        : 'unknown';
+                    classificationSource = 'override';
+                } else {
+                    const classification = await classifyPrompt(userPrompt || '');
+                    detectedCategory = classification.category;
+                    classificationScore = classification.score;
+                    classificationSource = classification.source;
+                }
+
+                const effectiveStyle = hasExplicitStyle
+                    ? lowPolyStyle
+                    : detectedCategory === 'humanoid'
+                        ? 'roblox'
+                        : undefined;
+
+                const baseGeometries = effectiveStyle === 'humanoid' || effectiveStyle === 'humanoid-indie'
+                    ? createIndieHumanoidTemplate()
+                    : effectiveStyle === 'roblox'
+                        ? createRobloxHumanoidTemplate()
+                        : meshData.geometries;
+
+                lowPolyPro = generateLowPolyProAsset(baseGeometries, {
                     presetId: adaptiveConfig.lowPolyPreset,
                     paletteId: adaptiveConfig.lowPolyPalette,
                     polyBudget: adaptiveConfig.lowPolyBudget
@@ -277,6 +308,9 @@ export const imageController = {
                     modelUrl: lowPolyProModelUrl
                 };
                 responseData.lowPolyReady = lowPolyPro.validation.passed;
+                responseData.detectedCategory = detectedCategory;
+                responseData.classificationScore = classificationScore;
+                responseData.classificationSource = classificationSource;
             }
 
             res.json({

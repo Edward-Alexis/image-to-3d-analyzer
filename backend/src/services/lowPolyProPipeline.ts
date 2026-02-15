@@ -24,7 +24,7 @@ export interface LowPolyProResult {
   validation: LowPolyValidation;
 }
 
-type GeometryType = 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid';
+type GeometryType = 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid' | 'beveledBox';
 
 interface GeometryData {
   type: GeometryType;
@@ -33,6 +33,100 @@ interface GeometryData {
   rotation?: [number, number, number];
   color: string;
 }
+
+export const createIndieHumanoidTemplate = (): GeometryData[] => ([
+  {
+    type: 'box',
+    position: [0, 0.5, 0],
+    size: [1.2, 1.5, 0.6],
+    color: '#ffffff'
+  },
+  {
+    type: 'box',
+    position: [0, 1.6, 0],
+    size: [0.7, 0.7, 0.7],
+    color: '#ffffff'
+  },
+  {
+    type: 'box',
+    position: [-0.9, 0.45, 0],
+    size: [0.4, 1.2, 0.4],
+    color: '#ffffff'
+  },
+  {
+    type: 'box',
+    position: [0.9, 0.45, 0],
+    size: [0.4, 1.2, 0.4],
+    color: '#ffffff'
+  },
+  {
+    type: 'box',
+    position: [-0.35, -1.1, 0],
+    size: [0.5, 1.4, 0.5],
+    color: '#ffffff'
+  },
+  {
+    type: 'box',
+    position: [0.35, -1.1, 0],
+    size: [0.5, 1.4, 0.5],
+    color: '#ffffff'
+  }
+]);
+
+export const createRobloxHumanoidTemplate = (): GeometryData[] => {
+  const torso = { width: 2.0, height: 2.0, depth: 1.0 };
+  const head = { width: 1.5, height: 1.5, depth: 1.5 };
+  const limb = { width: 1.0, height: 2.0, depth: 1.0 };
+  const armGap = 0.15;
+  const legGap = 0.2;
+
+  const torsoCenterY = torso.height / 2;
+  const headCenterY = torso.height + head.height / 2;
+  const legCenterY = -limb.height / 2;
+  const armCenterY = torsoCenterY;
+
+  const armOffsetX = torso.width / 2 + limb.width / 2 + armGap;
+  const legOffsetX = limb.width / 2 + legGap / 2;
+
+  return [
+    {
+      type: 'box',
+      position: [0, torsoCenterY, 0],
+      size: [torso.width, torso.height, torso.depth],
+      color: '#ffffff'
+    },
+    {
+      type: 'beveledBox',
+      position: [0, headCenterY, 0],
+      size: [head.width, head.height, head.depth],
+      color: '#ffffff'
+    },
+    {
+      type: 'box',
+      position: [-armOffsetX, armCenterY, 0],
+      size: [limb.width, limb.height, limb.depth],
+      color: '#ffffff'
+    },
+    {
+      type: 'box',
+      position: [armOffsetX, armCenterY, 0],
+      size: [limb.width, limb.height, limb.depth],
+      color: '#ffffff'
+    },
+    {
+      type: 'box',
+      position: [-legOffsetX, legCenterY, 0],
+      size: [limb.width, limb.height, limb.depth],
+      color: '#ffffff'
+    },
+    {
+      type: 'box',
+      position: [legOffsetX, legCenterY, 0],
+      size: [limb.width, limb.height, limb.depth],
+      color: '#ffffff'
+    }
+  ];
+};
 
 interface MeshBuffers {
   positions: number[];
@@ -47,7 +141,8 @@ const TRI_COUNTS: Record<GeometryType, number> = {
   cylinder: 24,
   sphere: 8,
   cone: 12,
-  pyramid: 6
+  pyramid: 6,
+  beveledBox: 28
 };
 
 const snap = (value: number, step: number) => Math.round(value / step) * step;
@@ -332,6 +427,71 @@ const addSphere = (buffers: MeshBuffers, geometry: GeometryData, color: [number,
   });
 };
 
+const addBeveledBox = (
+  buffers: MeshBuffers,
+  geometry: GeometryData,
+  color: [number, number, number],
+  bevelRatio: number = 0.12
+) => {
+  const [cx, cy, cz] = geometry.position;
+  const [w, h, d] = geometry.size;
+  const hx = w / 2;
+  const hy = h / 2;
+  const hz = d / 2;
+  const bevel = Math.min(hx, hy) * bevelRatio;
+
+  const x0 = hx - bevel;
+  const y0 = hy - bevel;
+
+  const outline: [number, number][] = [
+    [x0, hy],
+    [hx, y0],
+    [hx, -y0],
+    [x0, -hy],
+    [-x0, -hy],
+    [-hx, -y0],
+    [-hx, y0],
+    [-x0, hy]
+  ];
+
+  const frontZ = cz + hz;
+  const backZ = cz - hz;
+
+  const centerFront: [number, number, number] = [cx, cy, frontZ];
+  const centerBack: [number, number, number] = [cx, cy, backZ];
+
+  for (let i = 0; i < outline.length; i++) {
+    const next = (i + 1) % outline.length;
+    const v0: [number, number, number] = [cx + outline[i][0], cy + outline[i][1], frontZ];
+    const v1: [number, number, number] = [cx + outline[next][0], cy + outline[next][1], frontZ];
+    const normal = calculateNormal(centerFront, v0, v1);
+    pushTriangle(buffers, [centerFront, v0, v1], normal, color, [
+      [0.5, 0.5],
+      [0, 1],
+      [1, 1]
+    ]);
+
+    const b0: [number, number, number] = [cx + outline[i][0], cy + outline[i][1], backZ];
+    const b1: [number, number, number] = [cx + outline[next][0], cy + outline[next][1], backZ];
+    const backNormal = calculateNormal(centerBack, b1, b0);
+    pushTriangle(buffers, [centerBack, b1, b0], backNormal, color, [
+      [0.5, 0.5],
+      [0, 1],
+      [1, 1]
+    ]);
+  }
+
+  for (let i = 0; i < outline.length; i++) {
+    const next = (i + 1) % outline.length;
+    const v0: [number, number, number] = [cx + outline[i][0], cy + outline[i][1], frontZ];
+    const v1: [number, number, number] = [cx + outline[next][0], cy + outline[next][1], frontZ];
+    const v2: [number, number, number] = [cx + outline[next][0], cy + outline[next][1], backZ];
+    const v3: [number, number, number] = [cx + outline[i][0], cy + outline[i][1], backZ];
+    const normal = calculateNormal(v0, v1, v2);
+    addQuad(buffers, [v0, v1, v2, v3], normal, color);
+  }
+};
+
 const calculateNormal = (
   a: [number, number, number],
   b: [number, number, number],
@@ -369,6 +529,9 @@ const buildBuffers = (
         break;
       case 'pyramid':
         addPyramid(buffers, geometry, color);
+        break;
+      case 'beveledBox':
+        addBeveledBox(buffers, geometry, color);
         break;
       default:
         addBox(buffers, geometry, color);

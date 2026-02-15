@@ -68,6 +68,26 @@ export const LOW_POLY_PRESETS: LowPolyPreset[] = [
     maxParts: 24,
     minParts: 8,
     sizeStep: 0.025
+  },
+  {
+    id: 'indie-humanoid',
+    name: 'Indie Humanoid',
+    description: 'Preset estilizado para humanoide low poly indie.',
+    polyBudget: 600,
+    cylinderSegments: 6,
+    maxParts: 8,
+    minParts: 6,
+    sizeStep: 0.05
+  },
+  {
+    id: 'roblox-r6',
+    name: 'Roblox R6',
+    description: 'Preset para silueta Roblox clásica con cabeza biselada.',
+    polyBudget: 650,
+    cylinderSegments: 6,
+    maxParts: 8,
+    minParts: 6,
+    sizeStep: 0.05
   }
 ];
 
