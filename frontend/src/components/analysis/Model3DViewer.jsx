@@ -1,13 +1,11 @@
-import React, { Suspense, useRef } from 'react';
+import React, { Suspense, useMemo, useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Box, Cylinder, Sphere, Cone, Text, Gltf, Environment } from '@react-three/drei';
-import * as THREE from 'three';
+import { OrbitControls, Box, Cylinder, Sphere, Cone, Text, Gltf, Environment, RoundedBox } from '@react-three/drei';
+import { Euler } from 'three';
 
-// Componente para renderizar cada geometría individual
 function GeometryBlock({ type, position, size, rotation, color }) {
   const meshRef = useRef();
 
-  // Rotación suave
   useFrame(() => {
     if (meshRef.current) {
       meshRef.current.rotation.y += 0.001;
@@ -72,11 +70,99 @@ function GeometryBlock({ type, position, size, rotation, color }) {
   }
 }
 
-// Componente principal del visualizador
-function Model3DViewer({ meshData, modelUrl }) {
-  // Debug mode
-  console.log("ModelViewer Props:", { meshData, modelUrl });
+/** Malla bloque / cilindro con acabado mate y bordes ligeramente redondeados (estilo referencia) */
+function BlockyMeshPart({ type, size, color }) {
+  const mat = (
+    <meshStandardMaterial color={color} metalness={0.06} roughness={0.9} />
+  );
+  if (type === 'cylinder') {
+    const [w, h, d] = size;
+    const r = Math.max(w, d) / 2;
+    const segments = 12;
+    return (
+      <mesh castShadow receiveShadow>
+        <cylinderGeometry args={[r, r, h, segments]} />
+        {mat}
+      </mesh>
+    );
+  }
+  const rBevel = Math.max(0.012, Math.min(size[0], size[1], size[2]) * 0.07);
+  return (
+    <RoundedBox args={size} radius={rBevel} smoothness={3} castShadow receiveShadow>
+      {mat}
+    </RoundedBox>
+  );
+}
 
+function RigTreeNode({ name, rigNodes, nodesByName }) {
+  const node = nodesByName.get(name);
+  if (!node) return null;
+  const childDefs = rigNodes.filter((n) => n.parent === name);
+  const pivotRef = useRef();
+  const isAnimatedPivot = node.kind === 'pivot' && node.articulation;
+
+  useFrame(({ clock }) => {
+    if (!isAnimatedPivot || !pivotRef.current) return;
+    const t = clock.elapsedTime;
+    const { axis, role } = node.articulation;
+    let angle = 0;
+    if (role === 'elbow') angle = Math.sin(t * 1.1) * 0.52;
+    else if (role === 'knee') angle = Math.sin(t * 1.1 + Math.PI * 0.45) * 0.44;
+    else if (role === 'shoulder') angle = Math.sin(t * 0.65) * 0.14;
+    else if (role === 'hip') angle = Math.sin(t * 0.5) * 0.09;
+    if (name.endsWith('_R') && (role === 'elbow' || role === 'shoulder')) angle *= -1;
+    if (axis === 'x') pivotRef.current.rotation.x = angle;
+    else if (axis === 'y') pivotRef.current.rotation.y = angle;
+    else pivotRef.current.rotation.z = angle;
+  });
+
+  const rot = node.localRotation
+    ? new Euler(node.localRotation[0], node.localRotation[1], node.localRotation[2])
+    : undefined;
+
+  return (
+    <group
+      ref={isAnimatedPivot ? pivotRef : undefined}
+      position={node.localPosition}
+      rotation={rot}
+    >
+      {node.kind === 'mesh' && node.meshType && node.size && (
+        <BlockyMeshPart type={node.meshType} size={node.size} color={node.color} />
+      )}
+      {childDefs.map((c) => (
+        <RigTreeNode
+          key={c.name}
+          name={c.name}
+          rigNodes={rigNodes}
+          nodesByName={nodesByName}
+        />
+      ))}
+    </group>
+  );
+}
+
+function BlockyArticulatedRig({ rigNodes }) {
+  const nodesByName = useMemo(() => {
+    const m = new Map();
+    rigNodes.forEach((n) => m.set(n.name, n));
+    return m;
+  }, [rigNodes]);
+  const roots = rigNodes.filter((n) => n.parent == null);
+  return (
+    <>
+      {roots.map((r) => (
+        <RigTreeNode
+          key={r.name}
+          name={r.name}
+          rigNodes={rigNodes}
+          nodesByName={nodesByName}
+        />
+      ))}
+    </>
+  );
+}
+
+function Model3DViewer({ meshData, modelUrl }) {
   if ((!meshData || !meshData.geometries || meshData.geometries.length === 0) && !modelUrl) {
     return (
       <div className="w-full h-96 bg-slate-800 rounded-lg flex items-center justify-center">
@@ -88,7 +174,6 @@ function Model3DViewer({ meshData, modelUrl }) {
     );
   }
 
-  // Si hay URL de modelo GLB (TripoSR), renderizar eso
   if (modelUrl) {
     const fullModelUrl = modelUrl.startsWith('http') ? modelUrl : `http://localhost:5000${modelUrl}`;
 
@@ -113,7 +198,6 @@ function Model3DViewer({ meshData, modelUrl }) {
     );
   }
 
-  // Fallback: Renderizar bloques si no hay modeUrl
   const { geometries, metadata } = meshData;
   const boundingBox = metadata.boundingBox || { min: [-1, -1, -1], max: [1, 1, 1] };
   const centerX = (boundingBox.min[0] + boundingBox.max[0]) / 2;
@@ -126,43 +210,47 @@ function Model3DViewer({ meshData, modelUrl }) {
   const maxSize = Math.max(sizeX, sizeY, sizeZ);
   const cameraDistance = maxSize * 2.5;
 
+  const useBlockyRig =
+    metadata?.rigStyle === 'blocky-articulated' &&
+    Array.isArray(metadata?.rig) &&
+    metadata.rig.length > 0;
+
   return (
-    <div className="w-full h-96 bg-slate-900 rounded-lg overflow-hidden border border-slate-700">
+    <div className="w-full h-96 bg-slate-900 rounded-lg overflow-hidden border border-slate-700 relative">
       <Canvas
         shadows
-        camera={{ position: [cameraDistance, cameraDistance, cameraDistance], fov: 50 }}
+        camera={{ position: [cameraDistance, cameraDistance * 0.85, cameraDistance], fov: 50 }}
       >
         <Suspense fallback={null}>
-          {/* Iluminación */}
-          <ambientLight intensity={0.5} />
+          <ambientLight intensity={0.55} />
           <directionalLight
-            position={[10, 10, 5]}
-            intensity={1}
+            position={[8, 12, 6]}
+            intensity={1.05}
             castShadow
             shadow-mapSize-width={2048}
             shadow-mapSize-height={2048}
           />
-          <pointLight position={[-10, -10, -5]} intensity={0.5} />
+          <directionalLight position={[-6, 4, -4]} intensity={0.35} />
+          <pointLight position={[-10, -10, -5]} intensity={0.25} />
 
-          {/* Grid helper */}
           <gridHelper args={[maxSize * 2, 20, '#4a5568', '#2d3748']} />
-
-          {/* Ejes */}
           <axesHelper args={[maxSize]} />
 
-          {/* Renderizar todas las geometrías */}
-          {geometries.map((geometry, index) => (
-            <GeometryBlock
-              key={index}
-              type={geometry.type}
-              position={geometry.position}
-              size={geometry.size}
-              rotation={geometry.rotation}
-              color={geometry.color}
-            />
-          ))}
+          {useBlockyRig ? (
+            <BlockyArticulatedRig rigNodes={metadata.rig} />
+          ) : (
+            geometries.map((geometry, index) => (
+              <GeometryBlock
+                key={index}
+                type={geometry.type}
+                position={geometry.position}
+                size={geometry.size}
+                rotation={geometry.rotation}
+                color={geometry.color}
+              />
+            ))
+          )}
 
-          {/* Controles de órbita */}
           <OrbitControls
             enablePan={true}
             enableZoom={true}
@@ -172,26 +260,30 @@ function Model3DViewer({ meshData, modelUrl }) {
             target={[centerX, centerY, centerZ]}
           />
 
-          {/* Información del modelo */}
           <Text
             position={[centerX, boundingBox.max[1] + maxSize * 0.2, centerZ]}
-            fontSize={maxSize * 0.1}
-            color="#ffffff"
+            fontSize={maxSize * 0.09}
+            color="#e2e8f0"
             anchorX="center"
             anchorY="middle"
           >
-            {metadata.totalBlocks} bloques
+            {useBlockyRig ? 'Humanoide bloques (codos / rodillas)' : `${metadata.totalBlocks} bloques`}
           </Text>
         </Suspense>
       </Canvas>
 
-      {/* Controles de UI */}
-      <div className="absolute bottom-4 left-4 bg-slate-800/80 backdrop-blur-sm rounded-lg p-3 text-xs text-slate-300">
+      <div className="absolute bottom-4 left-4 bg-slate-800/80 backdrop-blur-sm rounded-lg p-3 text-xs text-slate-300 max-w-[220px]">
         <div className="space-y-1">
-          <p><strong>Bloques:</strong> {metadata.totalBlocks}</p>
-          <p><strong>Rotar:</strong> Click + arrastrar</p>
-          <p><strong>Zoom:</strong> Rueda del mouse</p>
-          <p><strong>Mover:</strong> Click derecho + arrastrar</p>
+          {useBlockyRig ? (
+            <>
+              <p><strong>Estilo:</strong> low-poly articulado</p>
+              <p><strong>Articulación:</strong> demo automática en codos y rodillas</p>
+            </>
+          ) : (
+            <p><strong>Bloques:</strong> {metadata.totalBlocks}</p>
+          )}
+          <p><strong>Rotar:</strong> arrastrar</p>
+          <p><strong>Zoom:</strong> rueda</p>
         </div>
       </div>
     </div>
@@ -199,4 +291,3 @@ function Model3DViewer({ meshData, modelUrl }) {
 }
 
 export default Model3DViewer;
-

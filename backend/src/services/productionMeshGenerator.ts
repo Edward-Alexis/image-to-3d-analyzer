@@ -264,7 +264,7 @@ function generateOptimalUVs(mesh: ProductionMesh): ProductionMesh {
   // Para cada cara, calcular UVs basados en área real
   const newUVs: UV[] = [];
 
-  mesh.faces.forEach((face, faceIndex) => {
+  mesh.faces.forEach((face, _faceIndex) => {
     // Calcular área de la cara en 3D
     const v0 = mesh.vertices[face.vertices[0]];
     const v1 = mesh.vertices[face.vertices[1]];
@@ -282,14 +282,14 @@ function generateOptimalUVs(mesh: ProductionMesh): ProductionMesh {
       z: v2.z - v0.z
     };
 
-    // Normal de la cara
-    const normal = {
+    const _normal = {
       x: edge1.y * edge2.z - edge1.z * edge2.y,
       y: edge1.z * edge2.x - edge1.x * edge2.z,
       z: edge1.x * edge2.y - edge1.y * edge2.x
     };
 
-    // Proyectar a UV space sin stretching
+    // Proyectar a UV space sin stretching (_normal reservado para mapeo futuro)
+
     // Usar la proyección que minimiza la distorsión
     const uvStart = newUVs.length;
 
@@ -324,16 +324,15 @@ function generateOptimalUVs(mesh: ProductionMesh): ProductionMesh {
  */
 async function generatePBRTextures(
   color: string,
-  size: number = 512
+  _size: number = 512
 ): Promise<MaterialData> {
   // En producción real, esto generaría texturas reales
   // Por ahora, retornamos datos de material PBR
 
-  // Convertir hex a RGB
   const hex = color.replace('#', '');
-  const r = parseInt(hex.substring(0, 2), 16) / 255;
-  const g = parseInt(hex.substring(2, 4), 16) / 255;
-  const b = parseInt(hex.substring(4, 6), 16) / 255;
+  const _r = parseInt(hex.substring(0, 2), 16) / 255;
+  const _g = parseInt(hex.substring(2, 4), 16) / 255;
+  const _b = parseInt(hex.substring(4, 6), 16) / 255;
 
   return {
     name: `material_${color.replace('#', '')}`,

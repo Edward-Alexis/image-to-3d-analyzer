@@ -43,7 +43,8 @@ RESPONDE SOLO JSON (sin markdown):
 
 geo: box/sphere/cylinder/cone
 tam: S/M/L
-Prioriza CANTIDAD de partes, nombres cortos.`;
+Prioriza CANTIDAD de partes, nombres cortos.
+Si la imagen es una persona o personaje humanoide, incluye "persona" o "humano" en descripcion (activa modelo bloques articulado).`;
                 } else {
                     finalPrompt = `Analiza imagen. Genera JSON modelo 3D voxel.
 
@@ -63,7 +64,8 @@ RESPONDE JSON (sin markdown):
 geo: box, sphere, cylinder
 tam: S, M, L
 pos: descripción corta
-MÁXIMA PRIORIDAD: muchas partes.`;
+MÁXIMA PRIORIDAD: muchas partes.
+Si es figura humana, incluye "persona" o "humano" en descripcion.`;
                 }
 
                 const response = await axios.post(

@@ -151,7 +151,10 @@ export function detectObjectType(analysisData: any): 'skeleton_armored' | 'human
         // Artes marciales
         'karate', 'taekwondo', 'kung fu', 'judo', 'gi', 'cinturon',
         'artes marciales', 'martial', 'luchador', 'ninja', 'samurai',
-        'chibi', 'cartoon', 'anime'
+        'chibi', 'cartoon', 'anime',
+        // Low-poly / bloques (referencia tipo Roblox)
+        'roblox', 'blocky', 'bloques', 'muñeco', 'muneco', 'figura humana',
+        'r6', 'r15', 'low poly', 'lowpoly', 'humanoide simple'
     ];
 
     if (humanoidKeywords.some(keyword => combinedText.includes(keyword))) {
@@ -186,7 +189,8 @@ export function getTemplate(type: string): ObjectTemplate | null {
         case 'skeleton_armored':
             return SKELETON_ARMORED_TEMPLATE;
         case 'humanoid':
-            return HUMANOID_TEMPLATE;
+            /** Humanoide: malla bloque articulada en meshGenerator (blockyHumanoidRig), no template plano antiguo */
+            return null;
         case 'vehicle':
             return VEHICLE_TEMPLATE;
         case 'quadruped':

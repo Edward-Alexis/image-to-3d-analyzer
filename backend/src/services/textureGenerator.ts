@@ -36,11 +36,10 @@ export function generateAlbedoTexture(
   // En producción real, esto generaría una imagen real
   
   // Simulación: retornar datos que representan una textura sólida
-  const canvas = {
+  const _canvas = {
     width,
     height,
     data: new Array(width * height * 4).fill(0).map((_, i) => {
-      const pixel = Math.floor(i / 4);
       const channel = i % 4;
       if (channel === 0) return r; // R
       if (channel === 1) return g; // G
@@ -59,7 +58,7 @@ export function generateAlbedoTexture(
  */
 export function generateRoughnessTexture(
   roughness: number,
-  options: TextureOptions = {}
+  _options: TextureOptions = {}
 ): string {
   // Roughness: 0 = espejo, 1 = mate
   const value = Math.floor(roughness * 255);
@@ -73,7 +72,7 @@ export function generateRoughnessTexture(
  */
 export function generateMetalnessTexture(
   metalness: number,
-  options: TextureOptions = {}
+  _options: TextureOptions = {}
 ): string {
   // Metalness: 0 = dieléctrico, 1 = metálico
   const value = Math.floor(metalness * 255);
@@ -86,7 +85,7 @@ export function generateMetalnessTexture(
  */
 export function generateNormalMap(
   intensity: number = 1.0,
-  options: TextureOptions = {}
+  _options: TextureOptions = {}
 ): string {
   // Normal map apunta hacia arriba por defecto (0.5, 0.5, 1.0 en RGB)
   // En producción, esto se generaría desde height map o geometría
@@ -98,7 +97,7 @@ export function generateNormalMap(
  * Genera AO (Ambient Occlusion) map
  */
 export function generateAOMap(
-  options: TextureOptions = {}
+  _options: TextureOptions = {}
 ): string {
   // AO map: áreas más oscuras = más oclusión
   // Por defecto, textura uniforme clara

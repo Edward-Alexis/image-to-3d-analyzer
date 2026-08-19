@@ -39,7 +39,7 @@ export default class AnalyzeController {
         }
     }
 
-    public getAnalysisResult = async (req: Request, res: Response, next: NextFunction) => {
+    public getAnalysisResult = async (req: Request, res: Response, _next: NextFunction) => {
         // TODO: Implementar persistencia de resultados si es necesario
         res.status(501).json({
             status: 'fail',

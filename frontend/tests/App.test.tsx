@@ -1,23 +1,24 @@
-import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { describe, test, expect } from 'vitest';
+import { render, screen, within } from '@testing-library/react';
 import App from '../src/App';
 
-describe('App Component', () => {
-  test('renders the main application title', () => {
+describe('App', () => {
+  test('muestra el título principal de la aplicación', () => {
     render(<App />);
-    const titleElement = screen.getByText(/Image to 3D Analyzer/i);
-    expect(titleElement).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Image to 3D/i })).toBeInTheDocument();
   });
 
-  test('renders the image uploader component', () => {
+  test('muestra la zona de subida de imágenes', () => {
     render(<App />);
-    const uploaderElement = screen.getByTestId('image-uploader');
-    expect(uploaderElement).toBeInTheDocument();
+    const zone = screen.getByTestId('image-upload-zone');
+    expect(zone).toBeInTheDocument();
+    expect(zone).toHaveTextContent(/Sube tu Imagen/i);
+    expect(zone).toHaveTextContent(/Seleccionar Archivo/i);
   });
 
-  test('renders the viewer 3D component', () => {
+  test('muestra el subtítulo de la marca en el encabezado', () => {
     render(<App />);
-    const viewerElement = screen.getByTestId('viewer-3d');
-    expect(viewerElement).toBeInTheDocument();
+    const banner = screen.getByRole('banner');
+    expect(within(banner).getByText(/AI Powered Analyzer/i)).toBeInTheDocument();
   });
 });

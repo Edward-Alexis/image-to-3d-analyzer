@@ -7,7 +7,7 @@ interface CustomError extends Error {
     name: string;
 }
 
-export const errorHandler = (err: CustomError, req: Request, res: Response, next: NextFunction) => {
+export const errorHandler = (err: CustomError, req: Request, res: Response, _next: NextFunction) => {
     logger.error('Error capturado:', {
         message: err.message,
         stack: err.stack,

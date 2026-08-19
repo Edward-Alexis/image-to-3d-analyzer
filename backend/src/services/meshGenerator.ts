@@ -4,6 +4,12 @@
 import { detectObjectType, getTemplate } from './templates';
 import { logger } from '../utils/logger'; // ✅ Agregado para logging consistente
 import { MESH_CONSTANTS } from '../config/constants'; // ✅ Constantes centralizadas
+import {
+  BLOCKY_HUMANOID_NODES,
+  flattenBlockyRigToGeometries,
+  serializeBlockyRig,
+  type SerializedRigNode,
+} from './blockyHumanoidRig';
 
 interface GeometryData {
   type: 'box' | 'cylinder' | 'sphere' | 'cone' | 'pyramid';
@@ -11,6 +17,7 @@ interface GeometryData {
   size: [number, number, number];
   rotation?: [number, number, number];
   color: string;
+  name?: string;
 }
 
 interface MeshData {
@@ -21,6 +28,8 @@ interface MeshData {
       min: [number, number, number];
       max: [number, number, number];
     };
+    rig?: SerializedRigNode[];
+    rigStyle?: 'blocky-articulated';
   };
 }
 
@@ -110,8 +119,28 @@ export function generateMeshFromImage(analysisData: any): MeshData {
 
   const template = getTemplate(objectType);
 
-  if (template && objectType !== 'generic') {
-    // ✅ OPCIÓN 1: Template especializado (skeleton_armored, humanoid, etc)
+  let rigMeta: SerializedRigNode[] | undefined;
+  let rigStyle: MeshData['metadata']['rigStyle'];
+
+  if (objectType === 'humanoid') {
+    logger.info(`🧱 Humanoide low-poly articulado (${BLOCKY_HUMANOID_NODES.length} nodos de rig)`);
+    const scaleFactor = baseSize / 2;
+    const primaryTone = colors && colors[0] ? colors[0] : '#A8A8A8';
+    const palette = [primaryTone, primaryTone, primaryTone];
+    const flat = flattenBlockyRigToGeometries(BLOCKY_HUMANOID_NODES, palette, scaleFactor);
+    flat.forEach((g) => {
+      geometries.push({
+        type: g.type,
+        position: g.position,
+        size: g.size,
+        color: g.color,
+        name: g.name,
+      });
+    });
+    rigMeta = serializeBlockyRig(BLOCKY_HUMANOID_NODES, palette, scaleFactor);
+    rigStyle = 'blocky-articulated';
+  } else if (template && objectType !== 'generic') {
+    // ✅ Template especializado (skeleton_armored, vehicle, quadruped)
     logger.info(`⚙️ Template especializado: ${template.type} (${template.parts.length} partes)`);
 
     const scaleFactor = baseSize / 2;
@@ -138,6 +167,7 @@ export function generateMeshFromImage(analysisData: any): MeshData {
         size: scaledSize,
         rotation: part.rotation || [0, 0, 0],
         color: color,
+        name: part.name,
       });
     });
 
@@ -244,7 +274,7 @@ export function generateMeshFromImage(analysisData: any): MeshData {
     logger.info(`⚠️ Generación genérica (${MESH_CONSTANTS.DEFAULT_GENERIC_BLOCKS} bloques)`);
 
     const geometryTypes = analysisData.geometria || ['cubo'];
-    const complexity = analysisData.complejidad?.toLowerCase() || 'alto';
+    const _complexity = analysisData.complejidad?.toLowerCase() || 'alto';
 
     let blockCount = MESH_CONSTANTS.DEFAULT_GENERIC_BLOCKS;
     const blockSize = baseSize / Math.cbrt(blockCount);
@@ -293,6 +323,7 @@ export function generateMeshFromImage(analysisData: any): MeshData {
         min: [minX, minY, minZ],
         max: [maxX, maxY, maxZ],
       },
+      ...(rigMeta && rigStyle ? { rig: rigMeta, rigStyle } : {}),
     },
   };
 }

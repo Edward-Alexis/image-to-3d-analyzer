@@ -32,6 +32,7 @@ const DragDropZone = () => {
   return (
     <div
       {...getRootProps()}
+      data-testid="image-upload-zone"
       className={`
         relative group overflow-hidden rounded-2xl transition-all duration-500 cursor-pointer
         border-2 border-dashed

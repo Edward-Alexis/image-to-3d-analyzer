@@ -1,6 +1,5 @@
 import sharp from 'sharp';
 import { logger } from '../utils/logger';
-import { sanitizer } from '../utils/sanitizer';
 
 export const imageProcessingService = {
     // Procesar imagen
@@ -44,7 +43,7 @@ export const imageProcessingService = {
     },
 
     // Análisis local (fallback)
-    localAnalysis: (file: Express.Multer.File) => {
+    localAnalysis: (_file: Express.Multer.File) => {
         logger.info('Usando análisis local (fallback)');
 
         return {

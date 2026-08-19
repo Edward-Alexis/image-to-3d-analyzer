@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
 import AnalyzeController from '../controllers/analyzeController';
-import { protect } from '../middleware/auth';
 import { AppError } from '../utils/AppError';
 
 const router = Router();
